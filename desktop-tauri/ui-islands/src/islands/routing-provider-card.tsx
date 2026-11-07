@@ -30,6 +30,9 @@ export function RoutingProviderCard({ id, profile, workspace, scope, now, index,
   const orderLocked = locked || Boolean(query)
   const summary = globalAccounts ? t('{selected} / {total} 个账号启用', { selected: participants.length, total: accounts.length })
     : t('{selected} / {total} 个账号参与', { selected: participants.length, total: accounts.length })
+  // 这一家此刻有多少在途请求：与连线高亮同一份数据（`metrics.accountRunning`），
+  // 但按账号求和 —— 连线只到提供商一级，卡片头这一行才是「现在是谁在扛」。
+  const running = accounts.reduce((sum, account) => sum + (workspace.metrics.accountRunning?.[account.id] || 0), 0)
   const bodyId = React.useId()
   return <Collapsible render={<section />} open={open} onOpenChange={onOpen} data-route-sort={included ? id : undefined}
     data-route-node={included ? id : undefined} className={cn('routing-config-provider', !included && 'is-off',
@@ -43,7 +46,7 @@ export function RoutingProviderCard({ id, profile, workspace, scope, now, index,
       <span className='routing-config-rank'>{included ? String(index + 1).padStart(2, '0') : '—'}</span>
       <RoutingProviderMark id={id} label={label} />
       <CollapsibleTrigger className='routing-provider-toggle' aria-controls={bodyId}>
-        <span className='routing-provider-name'><b title={label}>{label}</b><small>{summary}{unavailable ? ` · ${t('模型绑定不可用')}` : ''}</small></span>
+        <span className='routing-provider-name'><b title={label}>{label}</b><small>{summary}{running > 0 ? ` · ${t('{n} 在途', { n: running })}` : ''}{unavailable ? ` · ${t('模型绑定不可用')}` : ''}</small></span>
         <RouteIcon name='chevronDown' size={13} />
       </CollapsibleTrigger>
       <Switch checked={globalAccounts ? participants.length > 0 : included} disabled={locked} onCheckedChange={onJoin}
@@ -75,7 +78,7 @@ export function RoutingProviderCard({ id, profile, workspace, scope, now, index,
             status.resetAt > now ? t('{time} 后恢复', { time: formatDuration(status.resetAt - now) }) : status.reason,
           ].filter(Boolean).join(' · ')
           return <RoutingAccountRow key={key} id={key} account={account} rank={accountIndex + 1} joined={active} globalAccounts={globalAccounts}
-            sorting={workspace.sorting} now={now} settingsDisabled={busy}
+            sorting={workspace.sorting} now={now} settingsDisabled={busy} live={workspace.metrics.accountRunning?.[key] || 0}
             state={account.enabled === false ? 'disabled' : account.hasCredentials === false ? 'no-credentials' : status.state}
             stateText={account.enabled !== false && account.hasCredentials !== false && status.state === 'partial' ? status.label : undefined}
             note={note} locked={locked || !globalAccounts && !included} orderLocked={orderLocked || sorted || !included} orderHint={sorted ? manualOrderBlockedMessage(rules) : undefined}

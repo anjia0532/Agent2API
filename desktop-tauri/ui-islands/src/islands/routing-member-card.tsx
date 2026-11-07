@@ -9,15 +9,17 @@ import type { useRoutingDrag } from './routing-drag'
 import { RoutingAccountRow, RoutingActions, RoutingProviderMark, routingOrderKey } from './routing-canvas-controls'
 import { RouteIcon } from './routing-ui'
 
-export function RoutingMemberCard({ member, accounts, label, name, index, first, last, open, locked, query, drag, sorting, now,
+export function RoutingMemberCard({ member, accounts, label, name, index, first, last, open, locked, query, drag, sorting, now, accountRunning,
   onOpen, onJoin, onMove, onAccounts, onToggleAccount, onMoveAccount, onAccount, onSort }: {
   member: RouteMember; accounts: AccountRecord[]; label: string; name: string; index: number; first: boolean; last: boolean; open: boolean; locked: boolean; query: string
   drag: ReturnType<typeof useRoutingDrag>; onOpen(open: boolean): void; onJoin(on: boolean): void; onMove(direction: number): void
   onAccounts(): void; onToggleAccount(id: string): void; onMoveAccount(id: string, direction: number): void; onAccount(id: string): void
-  sorting?: AccountSorting | null; now: number; onSort(): void
+  sorting?: AccountSorting | null; now: number; accountRunning?: Record<string, number>; onSort(): void
 }) {
   const available = accounts.filter(account => providerOf(account) === member.provider)
   const order = [...new Set([...member.accounts, ...available.map(account => account.id)])]
+  // 这个成员（提供商 × 模型）此刻的在途数：与连线高亮同一份数据，按参与账号求和。
+  const running = member.accounts.reduce((sum, id) => sum + (accountRunning?.[id] || 0), 0)
   const searchingMember = `${label} ${name} ${member.model}`.toLowerCase().includes(query)
   const orderLocked = locked || Boolean(query)
   const accountDrag = drag.state?.kind === 'account' && drag.state.provider === member.id ? drag.state : null
@@ -31,7 +33,7 @@ export function RoutingMemberCard({ member, accounts, label, name, index, first,
       <span className='routing-config-rank'>{member.included ? String(index + 1).padStart(2, '0') : '—'}</span>
       <RoutingProviderMark id={member.provider} label={label} />
       <CollapsibleTrigger className='routing-provider-toggle'><span className='routing-provider-name'><b title={name}>{name}</b>
-        <small title={`${label} · ${member.model}`}>{label} · {member.model}</small></span><RouteIcon name='chevronDown' size={13} /></CollapsibleTrigger>
+        <small title={`${label} · ${member.model}`}>{label} · {member.model}{running > 0 ? ` · ${t('{n} 在途', { n: running })}` : ''}</small></span><RouteIcon name='chevronDown' size={13} /></CollapsibleTrigger>
       <Switch checked={member.included} disabled={locked} onCheckedChange={onJoin} aria-label={t('{model} 参与本路由', { model: name })}
         title={member.included ? t('移出本路由') : t('加入路由')} />
       <Button variant='ghost' size='icon-sm' className='routing-settings-button' disabled={locked}
@@ -53,9 +55,11 @@ export function RoutingMemberCard({ member, accounts, label, name, index, first,
           const account = available.find(item => item.id === id)
           const rank = member.accounts.indexOf(id)
           const state = !account ? 'missing' : account.enabled === false ? 'disabled' : account.hasCredentials === false ? 'no-credentials' : 'enabled'
+          const live = accountRunning?.[id] || 0
+          const note = joined ? (live > 0 ? `${t('参与本路由')} · ${t('{n} 在途', { n: live })}` : t('参与本路由')) : t('未参与本路由')
           return <RoutingAccountRow key={id} id={id} account={account} rank={rank + 1} joined={joined} state={state}
-            sorting={sorting} now={now} settingsDisabled={locked}
-            note={joined ? t('参与本路由') : t('未参与本路由')} locked={locked || !member.included} orderLocked={orderLocked || !member.included}
+            sorting={sorting} now={now} settingsDisabled={locked} live={live}
+            note={note} locked={locked || !member.included} orderLocked={orderLocked || !member.included}
             first={rank === 0} last={rank === member.accounts.length - 1} dragging={accountDrag?.id === id}
             drop={accountDrag?.target === id ? accountDrag.after ? 'after' : 'before' : undefined}
             onDrag={event => drag.start(event, 'account', member.id, id)} onMove={direction => onMoveAccount(id, direction)}

@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { Button, Checkbox, Popover, PopoverContent, PopoverTrigger, Switch, cn } from '@ui'
+import { Badge, Button, Checkbox, Popover, PopoverContent, PopoverTrigger, Switch, cn } from '@ui'
 import { t } from '../i18n'
 import { PROVIDER_ICONS } from './add-provider-pick'
 import { displayNameOf, providerOf } from './accounts-domain'
@@ -37,16 +37,20 @@ export function routingOrderKey(event: React.KeyboardEvent, move: (direction: nu
 }
 
 export function RoutingAccountRow({ id, account, rank, joined, state, stateText, note, locked, orderLocked, orderHint, first, last,
-  picked, dragging, drop, globalAccounts = false, sorting, now, settingsDisabled = false, onDrag, onMove, onToggle, onAccount }: {
+  picked, live = 0, dragging, drop, globalAccounts = false, sorting, now, settingsDisabled = false, onDrag, onMove, onToggle, onAccount }: {
   id: string; account?: AccountRecord; rank: number; joined: boolean; state: string; stateText?: string; note: string
   locked: boolean; orderLocked: boolean; orderHint?: string; first: boolean; last: boolean
-  picked?: boolean; dragging?: boolean; drop?: 'before' | 'after'; globalAccounts?: boolean
+  picked?: boolean; live?: number; dragging?: boolean; drop?: 'before' | 'after'; globalAccounts?: boolean
   sorting?: AccountSorting | null; now?: number; settingsDisabled?: boolean
   onDrag(event: React.PointerEvent): void; onMove(direction: number): void; onToggle(): void; onAccount?: () => void
 }) {
   const name = account ? displayNameOf(account) : t('账号已移除')
-  return <div data-route-sort={joined ? id : undefined} className={cn('routing-config-account', !joined && 'is-excluded', picked && 'is-picked',
-    dragging && 'is-dragging', drop && `drop-${drop}`)}>
+  // 在途数 > 0 的账号整行标出：路由页要回答的是「此刻这一单在谁身上」，
+  // 只高亮连线（提供商一级）时，用户还得展开卡片逐行找是哪一个账号。
+  const isLive = joined && live > 0
+  return <div data-route-sort={joined ? id : undefined} data-live={isLive ? String(live) : undefined}
+    className={cn('routing-config-account', !joined && 'is-excluded', picked && 'is-picked', isLive && 'is-live',
+      dragging && 'is-dragging', drop && `drop-${drop}`)}>
     <Button variant='ghost' size='icon-sm' className='routing-grip' disabled={orderLocked || !joined}
       title={orderHint || t('拖动或按 Alt + 方向键调整顺序')} aria-label={t('拖动调整账号顺序')}
       onPointerDown={onDrag} onKeyDown={event => routingOrderKey(event, onMove)}><RouteIcon name='gripVertical' size={14} /></Button>
@@ -55,6 +59,7 @@ export function RoutingAccountRow({ id, account, rank, joined, state, stateText,
     <span className='routing-config-account-name'><b title={name}>{name}</b>{note ? <small title={note}>{note}</small> : null}
       {account && now != null ? <RoutingCreditExpiry id={id} provider={providerOf(account)} sorting={sorting} now={now} /> : null}
     </span>
+    {isLive ? <Badge variant='brand' shape='tag' className='routing-account-live' title={t('在途请求 / 并发上限')}>{t('{n} 在途', { n: live })}</Badge> : null}
     <RouteStateBadge state={state}>{stateText}</RouteStateBadge>
     {globalAccounts ? <Switch checked={joined} disabled={locked || !account} onCheckedChange={onToggle}
       aria-label={t('启用账号 {account}', { account: name })} title={joined ? t('禁用账号') : t('启用账号')} />

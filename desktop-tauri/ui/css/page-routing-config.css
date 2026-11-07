@@ -105,6 +105,10 @@
 .routing-config-account + .routing-config-account { border-top: 1px solid var(--hairline); }
 .routing-config-account.is-excluded { color: var(--text-3); }
 .routing-config-account.is-picked { background: var(--primary-soft); }
+/* 在途账号整行标出：与连线高亮同色系，徽章给出在途数（见 RoutingAccountRow）。 */
+.routing-config-account.is-live { background: var(--primary-soft); }
+.routing-config-account.is-live .routing-account-avatar { background: var(--primary); color: var(--primary-fg); }
+.routing-config-account .routing-account-live { flex: none; }
 .routing-config-account .routing-account-avatar { width: 23px; height: 23px; font-size: 11px; }
 .routing-config-account .routing-account-rank { width: 14px; font: 11px var(--font-mono); }
 .routing-config-account-name { flex: 1; min-width: 0; }
