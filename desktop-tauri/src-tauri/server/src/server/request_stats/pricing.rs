@@ -258,12 +258,66 @@ where
     summary
 }
 
+// ── 内置快照（随二进制发布，离线可用）──────────────────────────────
+
+/// 随包发布的价格快照。
+///
+/// ── 为什么编译进二进制而不是运行时下载 ──────────────────────────
+/// 价格只用来「估算成本」：算不出来时界面写「未定价」即可，不该因此让报表
+/// 打不开。运行时下载会引入「网关连不上 openrouter.ai ⇒ 报表报错」这种
+/// 与业务无关的失败面，而价格表本身是按天更新的量级，随发版走足够。
+///
+/// 由 `scripts/fetch-pricing.mjs` 生成，换新价就重新生成再提交。
+const EMBEDDED: &str = include_str!("../../../assets/pricing.json");
+
+static SNAPSHOT: std::sync::OnceLock<Result<PriceSnapshot, String>> = std::sync::OnceLock::new();
+
+/// 取内置快照（解析一次，之后复用）。
+///
+/// 解析失败时返回 `Err`，**不 panic**：`panic = "abort"` 的发布构建里 panic
+/// 会让整个进程无声退出，而这只影响一个展示字段。
+pub fn snapshot() -> Result<&'static PriceSnapshot, String> {
+    SNAPSHOT
+        .get_or_init(|| {
+            let value: Value =
+                serde_json::from_str(EMBEDDED).map_err(|error| format!("内置价格表不是合法 JSON：{error}"))?;
+            PriceSnapshot::parse(&value)
+        })
+        .as_ref()
+        .map_err(|error| error.clone())
+}
+
+/// 按一组候选模型名依次试，返回第一个在价格表里能查到的结果。
+///
+/// ── 为什么要试多个候选 ────────────────────────────────────
+/// 价格表的 key 是上游的**规范名**（`deepseek/deepseek-chat` 这种带命名空间的），
+/// 而网关记录两列：`model`（解析后的名字，可能是 `deepseek-v4.1-flash`）
+/// 与 `upstream_model`（实际发给上游的名字）。两者哪个能命中没有规律，
+/// 所以按顺序各试一次；都查不到就如实返回「未定价」。
+pub fn cost_for<'a, I>(snapshot: &PriceSnapshot, candidates: I, row: PriceRow) -> (Option<String>, CostEstimate)
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    for candidate in candidates {
+        let name = candidate.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let cost = compute_row(snapshot, name, row);
+        if cost.known {
+            return (Some(name.to_string()), cost);
+        }
+    }
+    (None, CostEstimate::default())
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
 
-    fn snapshot() -> PriceSnapshot {
+    fn synthetic() -> PriceSnapshot {
         PriceSnapshot::parse(&json!({
             "meta": { "usd_cny": 7.1, "generated_at": "2026-11-02T22:55:18" },
             "models": {
@@ -290,7 +344,7 @@ mod tests {
     /// 三段分别是「未命中输入 / 命中输入 / 输出」，各乘自己的单价再乘汇率。
     #[test]
     fn a_flat_price_splits_cached_and_uncached_input() {
-        let snapshot = snapshot();
+        let snapshot = synthetic();
         let cost = compute_row(
             &snapshot,
             "deepseek-v4.1-flash",
@@ -306,7 +360,7 @@ mod tests {
     /// 没有单独给缓存价的模型，命中部分按**未命中价**算（保守，不多省钱）。
     #[test]
     fn a_model_without_a_cache_rate_falls_back_to_the_miss_rate() {
-        let snapshot = snapshot();
+        let snapshot = synthetic();
         let cost = compute_row(
             &snapshot,
             "no-cache-price",
@@ -319,7 +373,7 @@ mod tests {
     /// 输入超过阈值就换贵的一档（这是条件档位存在的全部意义）。
     #[test]
     fn a_long_prompt_switches_to_the_dearer_band() {
-        let snapshot = snapshot();
+        let snapshot = synthetic();
         let short = compute_row(
             &snapshot,
             "banded",
@@ -339,7 +393,7 @@ mod tests {
     /// 脏数据：缓存命中数大于输入总数时，未命中部分不能变负数、成本不能变负。
     #[test]
     fn cached_tokens_above_prompt_never_makes_the_cost_negative() {
-        let snapshot = snapshot();
+        let snapshot = synthetic();
         let cost = compute_row(
             &snapshot,
             "deepseek-v4.1-flash",
@@ -354,7 +408,7 @@ mod tests {
     /// 没价格的模型如实标 unknown，并进 missing —— 不能按 0 静默掉。
     #[test]
     fn an_unpriced_model_is_reported_as_missing_not_as_free() {
-        let snapshot = snapshot();
+        let snapshot = synthetic();
         let summary = sum_rows(
             &snapshot,
             vec![
@@ -375,5 +429,42 @@ mod tests {
         assert!(PriceSnapshot::parse(&json!({ "models": {} })).is_err());
         assert!(PriceSnapshot::parse(&json!({ "meta": { "usd_cny": 7.1 } })).is_err());
         assert!(PriceSnapshot::parse(&json!({ "meta": {}, "models": { "a": {} } })).is_err());
+    }
+
+    /// 内置快照必须真的能用（`include_str!` 的路径写错、或生成脚本改了形状，
+    /// 都在这里被立刻发现，而不是等到界面上全显示「未定价」）。
+    #[test]
+    fn the_embedded_snapshot_parses_and_covers_models() {
+        let snapshot = snapshot().expect("内置价格表必须能解析");
+        assert!(
+            snapshot.models.len() > 100,
+            "内置价格表条目太少，可能是生成脚本没跑完整：{}",
+            snapshot.models.len()
+        );
+        assert!(snapshot.rate() > 1.0, "汇率应当在合理区间，实际 {}", snapshot.rate());
+        // 每一条都得有输出价与未命中输入价（缓存价可以缺）
+        for (id, entry) in snapshot.models.iter().take(50) {
+            let (_, rate) = entry.band_for(0);
+            assert!(rate.input_cache_miss > 0.0, "{id} 的输入价应当为正");
+            assert!(rate.output > 0.0, "{id} 的输出价应当为正");
+        }
+    }
+
+    /// `cost_for` 按候选顺序试，命中第一个能查到的名字。
+    #[test]
+    fn cost_for_tries_each_candidate_in_order() {
+        let snapshot = snapshot().expect("内置价格表必须能解析");
+        let row = PriceRow { prompt_tokens: 1000, completion_tokens: 100, cache_read_tokens: 0 };
+        // 第一个候选查不到、第二个能查到 ⇒ 用第二个
+        let (used, cost) = cost_for(&snapshot, ["definitely-not-a-model", "openai/gpt-4o"], row);
+        assert_eq!(used.as_deref(), Some("openai/gpt-4o"), "应当落到第二个候选");
+        assert!(cost.known);
+        assert!(cost.cny > 0.0, "有价格时成本应当为正，实际 {}", cost.cny);
+
+        // 全查不到 ⇒ 未定价，且成本为 0（而不是随便给个 0 装作已知）
+        let (used, cost) = cost_for(&snapshot, ["nope-a", "nope-b"], row);
+        assert!(used.is_none());
+        assert!(!cost.known);
+        assert_eq!(cost.cny, 0.0);
     }
 }

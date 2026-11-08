@@ -616,6 +616,38 @@ pub(super) fn entry_json(entry: &RequestEntry) -> Value {
                 None => Value::Null,
             },
         );
+        // ── 模型价格估算（按挂牌价折算的等值成本，**不是**上游实扣）──────
+        // 口径见 `request_stats::pricing` 的模块头：它回答的是「同样这些
+        // token 按公开挂牌价值多少钱」，与账本里的 `credit` 列是两件事。
+        //
+        // 查不到价时给 `costKnown: false` + `costCny: 0`，并**不**省略字段：
+        // 界面据此显示「未定价」，而「字段缺失」在前端看起来和旧版本一样，
+        // 分不清是没价还是没这个功能。
+        let (priced_model, cost) = match super::pricing::snapshot() {
+            Ok(snapshot) => super::pricing::cost_for(
+                snapshot,
+                [entry.model.as_str(), entry.upstream_model.as_str()],
+                super::pricing::PriceRow {
+                    prompt_tokens: entry.prompt_tokens,
+                    completion_tokens: entry.completion_tokens,
+                    cache_read_tokens: entry.cache_read_tokens,
+                },
+            ),
+            Err(_) => (None, super::pricing::CostEstimate::default()),
+        };
+        object.insert("costKnown".to_string(), Value::Bool(cost.known));
+        // 保留 4 位小数：单条请求的成本常在「分」以下，取整会全变 0
+        object.insert(
+            "costCny".to_string(),
+            json!((cost.cny * 10_000.0).round() / 10_000.0),
+        );
+        object.insert(
+            "costPricedModel".to_string(),
+            match priced_model {
+                Some(model) => Value::String(model),
+                None => Value::Null,
+            },
+        );
     }
     value
 }
