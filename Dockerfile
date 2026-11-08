@@ -78,6 +78,11 @@ RUN /build/cargo-build.sh
 
 COPY desktop-tauri/src-tauri/server/src src-tauri/server/src
 COPY desktop-tauri/src-tauri/server/build.rs src-tauri/server/
+# 编译进二进制的静态资源（价格快照等）。`include_str!` 的路径相对源码文件解析：
+# server/src/server/request_stats/pricing.rs 里的
+# include_str!("../../../assets/pricing.json") 指向 server/assets/pricing.json。
+# 漏掉这一行会让镜像构建在**编译期**失败（文件不在就编不过，不是运行时才炸）。
+COPY desktop-tauri/src-tauri/server/assets src-tauri/server/assets
 # ── 为什么构建阶段也要 ui/ ──────────────────────────────────
 # `server/src/server/api/plugin_theme.rs` 用 `include_str!` /
 # `include_bytes!` 把几份静态资源编进二进制（宿主设计令牌、组件库产物、
