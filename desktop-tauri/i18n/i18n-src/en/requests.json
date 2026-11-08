@@ -223,5 +223,6 @@
   "（请求仍在转发中）": "(request is still being forwarded)",
   "（账号：{account}）": "(Account: {account})",
   "，{n}毫秒后重试": ", retry in {n}ms",
-  "，{n}秒后重试": ", retry in {n}s"
+  "，{n}秒后重试": ", retry in {n}s",
+  "按挂牌价折算的等值成本，不是账单": "Equivalent cost at list price — not a bill"
 }

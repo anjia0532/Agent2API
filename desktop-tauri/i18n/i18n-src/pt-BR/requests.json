@@ -223,5 +223,6 @@
   "（请求仍在转发中）": "(a requisição ainda está sendo encaminhada)",
   "（账号：{account}）": "(conta: {account})",
   "，{n}毫秒后重试": ", retry em {n}ms",
-  "，{n}秒后重试": ", retry em {n}s"
+  "，{n}秒后重试": ", retry em {n}s",
+  "按挂牌价折算的等值成本，不是账单": "Custo equivalente pelo preço de tabela — não é uma fatura"
 }

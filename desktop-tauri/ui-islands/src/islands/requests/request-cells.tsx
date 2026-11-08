@@ -5,6 +5,7 @@ import { NameEyeButton } from '../accounts-panels'
 import { maskName } from '../accounts-store'
 import { numberText } from '../accounts-shared'
 import { apiKeyRequestLabel, clientRequestLabel } from './source-filters'
+import { formatCny } from '../report-charts'
 import { visionDetail } from '../../../../ui-shared/request-vision-detail'
 
 export type RequestEntry = {
@@ -17,6 +18,11 @@ export type RequestEntry = {
   /** 上游按请求上报的积分消耗（后端 `credit`）；null / 缺键 = 这一家没上报，
    *  与 0（确实零消耗）是两件事 —— 前者显示「—」 */
   credit?: number | null
+  /** 按公开挂牌价折算的**等值成本**（后端 `costCny`，人民币）。
+   *  `costKnown` 为 false / 缺键表示价表里查不到这个模型 —— 与「成本为 0」
+   *  是两件事，前者不显示金额，否则会让人以为这次请求不花钱。
+   *  `costPricedModel` 是实际命中价表的那个名字（便于解释「为什么查到/查不到」）。 */
+  costCny?: number | null; costKnown?: boolean; costPricedModel?: string | null
   route?: unknown
   attempts?: number; attemptDetails?: unknown[]; sensitiveHits?: unknown[]
   /** 模型测试发起的请求（后端 `is_test`；此前落盘的老行没有这个键） */
@@ -395,15 +401,31 @@ export function RequestCell({ entry, column, namesHidden }: { entry: RequestEntr
         return <span key={key} className={`${className} is-empty`} title={t('失败请求不记录用量')}>—</span>
       }
       const value = entry.credit
+      // ── 估算成本（按公开挂牌价折算，**不是**上游实扣）──────────────
+      //
+      // 与「积分」是两件事，所以画在**第二行**而不是替换它：
+      //   · 积分 = 上游自己上报的扣费（`credit`），没有就是没有；
+      //   · 估算成本 = 把这些 token 按挂牌价折成人民币，用来横向比价。
+      // 查不到价（`costKnown !== true`）时**不显示这一行** —— 显示 `¥0`
+      // 会让人以为这次请求不花钱。
+      const costLine = entry.costKnown === true
+        ? <span className='req-usage-line sub' title={t('按挂牌价折算的等值成本，不是账单')}>
+            ≈{formatCny(entry.costCny)}
+          </span>
+        : null
       if (value === null || value === undefined || !Number.isFinite(Number(value))) {
         return (
-          <span key={key} className={`${className} is-empty`} title={t('上游没有返回积分消耗')}>—</span>
+          <span key={key} className={`${className} is-empty`} title={t('上游没有返回积分消耗')}>
+            {costLine ? <span className='req-usage-line'>—</span> : '—'}
+            {costLine}
+          </span>
         )
       }
       return (
         <span key={key} className={className}
           title={t('本次请求消耗 {credit} 积分', { credit: numberText(value) })}>
-          {numberText(value)}
+          <span className='req-usage-line'>{numberText(value)}</span>
+          {costLine}
         </span>
       )
     }
