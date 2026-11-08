@@ -181,5 +181,9 @@
   "输入": "Entrada",
   "输出": "Saída",
   "命中率": "Acertos",
-  "缓存读取属于输入，不重复计入总 Token": "Leituras de cache fazem parte da entrada, sem duplicar o total de tokens"
+  "缓存读取属于输入，不重复计入总 Token": "Leituras de cache fazem parte da entrada, sem duplicar o total de tokens",
+  "估算成本": "Custo estimado",
+  "{n} 条未定价": "{n} sem preço",
+  "按挂牌价折算 · {n} 条未定价": "Preço de tabela · {n} sem preço",
+  "按挂牌价折算，不是账单": "Preço de tabela — não é uma fatura"
 }

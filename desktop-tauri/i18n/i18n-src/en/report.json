@@ -181,5 +181,9 @@
   "输入": "Input",
   "输出": "Output",
   "命中率": "Hit rate",
-  "缓存读取属于输入，不重复计入总 Token": "Cache reads are part of input, not added to total tokens again"
+  "缓存读取属于输入，不重复计入总 Token": "Cache reads are part of input, not added to total tokens again",
+  "估算成本": "Estimated cost",
+  "{n} 条未定价": "{n} unpriced",
+  "按挂牌价折算 · {n} 条未定价": "At list price · {n} unpriced",
+  "按挂牌价折算，不是账单": "At list price — not a bill"
 }

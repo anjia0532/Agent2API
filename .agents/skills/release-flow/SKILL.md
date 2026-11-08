@@ -137,6 +137,10 @@ GitHub 的归属规则只有一条：**提交头里的 author 邮箱出现在某
 git status --short        # 必须为空；有改动就先提交或清理
 cargo check               # 或前端有改动时做一次构建自检
 
+# 1.5 重新生成模型价格快照（报表「估算成本」用的那张表）
+node scripts/fetch-pricing.mjs
+git diff --stat desktop-tauri/src-tauri/server/assets/pricing.json   # 有变化就提交进 beta
+
 # 2. 切到 main 并把 beta 合进来
 git switch main && git pull
 git merge beta
@@ -162,6 +166,8 @@ gh run list --repo Agent2Builder/agent2api-releases --limit 4
 ```
 
 **发布提交的提交信息 = 更新日志**。自动发布任务读取固定源码提交的日志；应急脚本仍读取 `git log -1 --format=%B "$TAG"`。不得从其它分支生成替代日志。
+
+**第 1.5 步不要省**：报表的「估算成本」读的是编译进二进制的 `desktop-tauri/src-tauri/server/assets/pricing.json`，它是**发版时点的一次快照**，不是运行时联网取的。不重新生成就直接发版，等于把上次发版那天的价格发给所有用户 —— 上游调价后估算会一路偏，而且**没有任何报错**，只有用户自己拿账单对才会发现。生成完看 `git diff --stat`：有变化说明上游确实调过价，**提交进 beta 再走发版**（这一步不产出日志条目，属于版本内数据的例行更新）。
 
 - 格式沿用历史版本的编号清单，每行一条，带分类前缀：`新增：` / `优化：` / `修复：` / `更新：` / `移除：`，最后一条固定 `版本：X.Y.Z → X.Y.Z+1`；
 - 内容取「上个 tag 以来的全部提交」综合整理（`git log vX.Y.Z..HEAD --oneline`），纯 CI / 临时的调试提交归并成一条流程性描述即可；

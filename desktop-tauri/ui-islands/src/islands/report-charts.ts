@@ -34,6 +34,28 @@ export type StatsOverview = StatsUsage & {
   topModel?: { model?: string; tokens?: number; percentage?: number } | null
 }
 export type CacheRateWindow = { inputTokens?: number; hitTokens?: number; rate?: number }
+
+/**
+ * 区间内的**估算成本**汇总（`/api/stats/summary` 的 `cost` 块）。
+ *
+ * ── 口径 ──────────────────────────────────────────────────
+ * 按公开挂牌价把 token 用量折算成人民币的**等值估算**，不是上游实际扣费。
+ * 网关自己的账本是 `credit` 列，两者不可换算。
+ *
+ * ── 为什么 `missingCount` 与 `cny` 同等重要 ──────────────────
+ * 价表覆盖不到新模型是常态。只显示一个合计会让人以为那就是全部，而实际可能
+ * 有一半请求没算进去。`missingCount > 0` 时必须让用户看见，否则这个数字会
+ * 被当成账单来用。
+ */
+export type StatsCost = {
+  available?: boolean
+  cny?: number
+  priced?: number
+  missingCount?: number
+  missing?: { model?: string }[]
+  estimated?: boolean
+}
+
 export type StatsSummary = {
   range?: string; startDate?: string; endDate?: string
   overview?: StatsOverview
@@ -47,6 +69,8 @@ export type StatsSummary = {
   cacheRates?: Record<string, CacheRateWindow>
   cacheTrend24h?: StatsHour[]
   dailyTrend?: StatsDay[]
+  /** 估算成本汇总；旧网关不返回该字段 */
+  cost?: StatsCost
 }
 
 /* ─── 时间范围（档位与后端白名单逐字一致） ─── */
@@ -118,6 +142,24 @@ export function axisText(value: number, max: number): string {
 /** 后端 rate 是比值而非百分数，且合法地可能超过 1。 */
 export function formatPercent(rate: unknown): string {
   return `${((Number(rate) || 0) * 100).toFixed(1)}%`
+}
+
+/**
+ * 人民币金额（估算成本）。
+ *
+ * ── 为什么按量级换小数位 ────────────────────────────────────
+ * 单个区间的估算成本常常只有几毛甚至几分。统一保留两位小数会让小额全变成
+ * `¥0.00`，看上去像「没算出来」；统一保留四位又让大额读起来啰嗦。所以按量级
+ * 取位：≥100 元取整、≥1 元两位、其余三位；**非零但极小**时用 `<¥0.001`
+ * 明说，而不是显示成 0 —— 「很小」和「没有」对用户的判断完全不同。
+ */
+export function formatCny(value: unknown): string {
+  const amount = Number(value)
+  if (!Number.isFinite(amount) || amount <= 0) return '¥0'
+  if (amount >= 100) return `¥${amount.toFixed(0)}`
+  if (amount >= 1) return `¥${amount.toFixed(2)}`
+  if (amount >= 0.001) return `¥${amount.toFixed(3)}`
+  return '<¥0.001'
 }
 
 export function round1(value: number): number {
