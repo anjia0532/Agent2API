@@ -69,6 +69,9 @@ pub(crate) mod legacy;
 // 聚合计算（日报折算 / 重算 / 报表装配）与维护动作（两模式清理 / 预览 /
 // 数据库压缩）：各自的拆分理由见两个子模块的模块头。
 mod aggregate;
+// 模型价格估算（把 token 用量折算成挂牌价人民币）。与 `credit` 列是两个不同
+// 的问题，见该模块头；纯函数、无 IO，随报表一起单测。
+mod pricing;
 mod daily;
 mod maintenance;
 mod record;
@@ -677,7 +680,65 @@ impl RequestStats {
         if let (Some(target), Some(sources)) = (summary.as_object_mut(), sources.as_object()) {
             target.extend(sources.clone());
         }
+        // ── 估算成本汇总（按挂牌价折算，**不是**上游实扣）──────────────
+        // 区间直接取 `summarize` 算出来的 `startDate` / `endDate`：那是报表
+        // 已经归一过的权威边界（含「反向区间交换」「end 夹到今天」两条防线），
+        // 在这里重新按 range 推一遍必然与它分叉。
+        let cost = self.cost_summary(
+            summary["startDate"].as_str().unwrap_or(""),
+            summary["endDate"].as_str().unwrap_or(""),
+        );
+        if let Some(target) = summary.as_object_mut() {
+            target.insert("cost".to_string(), cost);
+        }
         summary
+    }
+
+    /// 区间内的**估算成本汇总**（人民币）。
+    ///
+    /// ── 口径 ──────────────────────────────────────────────────
+    /// 与请求日志每行的 `costCny` 同一份价表、同一条公式，只是先按模型把三类
+    /// token 求和再计价（理由见 `sql::sum_tokens_by_model` 的说明）。
+    ///
+    /// ── 已知近似：长度分档 ────────────────────────────────────
+    /// 价表里带 `min_prompt_tokens` 条件档的模型，逐行取档与先求和再取档可能
+    /// 落在不同档。逐行精确需要把整个区间的明细全拉出来，代价与收益不成比例
+    /// （这类模型在公开目录里是少数），所以这里按**求和后的总量**取档。
+    /// ⇒ 数字是估算，不该当作账单核对。
+    ///
+    /// ── 为什么把 `missing` 一并返回 ────────────────────────────
+    /// 价表覆盖不到新模型是常态。只回一个「合计 ¥12」会让用户以为这就是全部，
+    /// 而实际可能有一半请求没算进去。`missing` 列出**没定价的模型名与条数**，
+    /// 界面据此显示「另有 N 条未定价」，数字才有意义。
+    fn cost_summary(&self, start: &str, end: &str) -> Value {
+        let snapshot = match super::request_stats::pricing::resolved() {
+            Ok(snapshot) => snapshot,
+            // 内置价表读不出来时如实说，而不是回一个像模像样的 0
+            Err(error) => {
+                return json!({
+                    "available": false,
+                    "error": error,
+                    "cny": 0.0,
+                    "priced": 0,
+                    "missing": [],
+                })
+            }
+        };
+        let (Ok(start_date), Ok(end_date)) = (
+            NaiveDate::parse_from_str(start, "%Y-%m-%d"),
+            NaiveDate::parse_from_str(end, "%Y-%m-%d"),
+        ) else {
+            return json!({ "available": false, "error": "区间日期无法解析", "cny": 0.0, "priced": 0, "missing": [] });
+        };
+        // [start 00:00, end 次日 00:00) —— 与明细列表同一口径（含右端那一天）
+        let from_ms = clock::local_midnight_ms(start_date);
+        let to_ms = clock::local_midnight_ms(end_date + chrono::Duration::days(1));
+        let grouped = {
+            let guard = self.guard();
+            self.with_conn(&guard, |conn| sql::sum_tokens_by_model(conn, from_ms, to_ms))
+        };
+        let grouped = grouped.unwrap_or_default();
+        price_groups(snapshot, grouped)
     }
 
     /// 明细查询：倒序（新在前）分页。
@@ -911,5 +972,115 @@ impl RequestStats {
             // 标记没写，下次启动自然再试，订正不会因此丢
             None => {}
         }
+    }
+}
+
+/// 把「按模型聚合好的 token」折算成成本汇总（纯函数，便于单测）。
+///
+/// 输入是 `sql::sum_tokens_by_model` 的产物：
+/// `(model, upstream_model, prompt, completion, cache_read)`。
+///
+/// ── 三条口径 ────────────────────────────────────────────────
+/// 1. **零用量的分组直接跳过**：`prompt` 与 `completion` 都是 0 的行不参与
+///    计价，也不进 `missing` —— 它没花钱，报「未定价」只会误导；
+/// 2. **查不到价的分组进 `missing`，不进 `priced`**：否则「已定价 N 个」会把
+///    它们也数进去，`missing` 与 `priced` 就对不上账；
+/// 3. `cny` 保留 **2 位小数**：汇总到「分」即可，再多的位数只是浮点噪声。
+fn price_groups(
+    snapshot: &super::request_stats::pricing::PriceSnapshot,
+    groups: Vec<(String, String, i64, i64, i64)>,
+) -> Value {
+    let mut cny = 0.0_f64;
+    let mut priced = 0_i64;
+    let mut missing: Vec<Value> = Vec::new();
+    for (model, upstream_model, prompt, completion, cache_read) in groups {
+        if prompt == 0 && completion == 0 {
+            continue;
+        }
+        let row = super::request_stats::pricing::PriceRow {
+            prompt_tokens: prompt,
+            completion_tokens: completion,
+            cache_read_tokens: cache_read,
+        };
+        let (_, cost) = super::request_stats::pricing::cost_for(
+            snapshot,
+            [model.as_str(), upstream_model.as_str()],
+            row,
+        );
+        if !cost.known {
+            let name = if model.is_empty() { upstream_model } else { model };
+            missing.push(json!({ "model": name }));
+            continue;
+        }
+        cny += cost.cny;
+        priced += 1;
+    }
+    json!({
+        "available": true,
+        "cny": (cny * 100.0).round() / 100.0,
+        "priced": priced,
+        "missing": missing,
+        "missingCount": missing.len() as i64,
+        // 口径说明：界面要能一句话讲清「这不是账单」
+        "estimated": true,
+    })
+}
+
+#[cfg(test)]
+mod cost_summary_tests {
+    use super::*;
+
+    fn groups() -> Vec<(String, String, i64, i64, i64)> {
+        vec![
+            // 有价的模型（价表里有 openai/gpt-4o）
+            ("openai/gpt-4o".to_string(), String::new(), 1_000_000, 0, 0),
+            // 上游名能命中、解析名命中不了 —— 走候选顺序的第二项
+            ("some-alias".to_string(), "openai/gpt-4o".to_string(), 1_000_000, 0, 0),
+            // 完全没价
+            ("definitely-not-a-model".to_string(), String::new(), 1_000_000, 0, 0),
+            // 零用量：既不计价也不进 missing
+            ("definitely-not-a-model".to_string(), String::new(), 0, 0, 0),
+        ]
+    }
+
+    /// 有价的进 `cny` 与 `priced`，没价的进 `missing`，零用量的两边都不进。
+    #[test]
+    fn cost_summary_separates_priced_from_missing() {
+        let snapshot = super::super::request_stats::pricing::snapshot().expect("内置价表");
+        let value = price_groups(snapshot, groups());
+        assert_eq!(value["available"], json!(true));
+        assert_eq!(value["estimated"], json!(true));
+        assert_eq!(value["priced"], json!(2), "两条能定价（含靠 upstream_model 命中的那条）");
+        assert_eq!(value["missingCount"], json!(1), "只有那条真的没价");
+        assert!(
+            value["cny"].as_f64().unwrap_or(0.0) > 0.0,
+            "有定价时汇总必须为正，实际 {}",
+            value["cny"]
+        );
+    }
+
+    /// 全部没价时：`priced = 0`、`missing` 列全，`cny` 为 0 ——
+    /// 这个 0 是「没算出来」，不是「没花钱」，所以必须同时给出 missing。
+    #[test]
+    fn an_entirely_unpriced_range_still_reports_what_is_missing() {
+        let snapshot = super::super::request_stats::pricing::snapshot().expect("内置价表");
+        let value = price_groups(
+            snapshot,
+            vec![("nope-a".to_string(), String::new(), 100, 10, 0)],
+        );
+        assert_eq!(value["priced"], json!(0));
+        assert_eq!(value["cny"].as_f64(), Some(0.0));
+        assert_eq!(value["missingCount"], json!(1));
+    }
+
+    /// 空分组不该崩，也不该报 available:false（那是「价表读不出来」的语义）。
+    #[test]
+    fn an_empty_range_is_available_with_zero_cost() {
+        let snapshot = super::super::request_stats::pricing::snapshot().expect("内置价表");
+        let value = price_groups(snapshot, Vec::new());
+        assert_eq!(value["available"], json!(true));
+        assert_eq!(value["cny"].as_f64(), Some(0.0));
+        assert_eq!(value["priced"], json!(0));
+        assert_eq!(value["missingCount"], json!(0));
     }
 }

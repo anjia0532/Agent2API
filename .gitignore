@@ -79,3 +79,14 @@ desktop-tauri/mobile/ios/DerivedData/
 # 提供商插件（独立仓库的本地开发目录，不得进入本仓库历史）
 /agent2api-providers/
 /plugin/
+
+# ── 本地 Docker / 探针试跑的数据目录 ────────────────────────────────────
+# 里面是 SQLite 账号库（凭据为 enc1 信封，但 account.key 同目录）+ 插件包。
+# 绝不能入库：一旦提交，账号密钥就永久留在历史里，gitignore 补救不了。
+/docker-data/
+/probe-data/
+
+# ── JetBrains IDE 的本机配置 ────────────────────────────────────────────
+# 只排除工作区级的 .idea/；不要把规则写成全局 `*.iml`，子目录里可能有
+# 需要入库的模块定义。
+/.idea/

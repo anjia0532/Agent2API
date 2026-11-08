@@ -687,6 +687,15 @@ pub trait ProviderAdapter: Send + Sync {
     /// 注意编排层只取这里 QuotaLimited 的**记账**语义（标记冷却后仍按队列
     /// 顺延）—— 不会对同一条错误再套用无状态路径的重试/刷新动作。
     fn classify_conversation_error(&self, error: &GatewayError) -> UpstreamErrorClass {
+        // ── 异步边界算好的分类是**权威**（issue #489）──────────────
+        // 插件家的分类在异步侧算（`classify` RPC），能识别「错误藏在 HTTP 200
+        // 正文里、被折成 403」这类只有插件才知道的情形（日池耗尽、活动额度用尽、
+        // 需要冷却到某个时刻的限流）。这个同步钩子发不出 RPC，所以只要错误身上
+        // 带着那份分类，就直接用它 —— 按 HTTP 状态码重猜一遍会把 403 判成
+        // `Fatal`，而 Fatal 不换号、不冷却。
+        if let Some(class) = error.conversation_class() {
+            return class.clone();
+        }
         UpstreamErrorClass::Fatal {
             status: u16::try_from(error.status_code).unwrap_or(500),
             message: error.message.clone(),
@@ -2501,3 +2510,49 @@ pub async fn refresh_implemented_forced(
 // 两家先后接上真身（W5-T-d4 / W4b-T-c2）后，占位实现不再有任何生产调用点，
 // W6 收尾时连文件一起删除 —— 现在加 provider 的过渡方案是：先在
 // `adapter_for` 里给一个最小实现，而不是重新引入一层占位结构。
+
+#[cfg(test)]
+mod conversation_class_passthrough_tests {
+    use super::*;
+    use crate::server::errors::GatewayError;
+
+    /// 带着 `QuotaLimited` 的错误经过**默认实现**后必须仍是 `QuotaLimited`，
+    /// 且恢复时刻原样带回来。
+    ///
+    /// 反过来说：如果默认实现还是那句无条件的 `Fatal`，这条会立刻红 ——
+    /// 而那正是「日池耗尽却不换号、不冷却」的成因。
+    #[test]
+    fn the_default_impl_keeps_an_already_classified_error() {
+        let reset_at = 1_800_000_000_000_i64;
+        let error = GatewayError::with_status(403, "上游报告 InferHub.4291.200：insufficient quota")
+            .with_conversation_class(UpstreamErrorClass::QuotaLimited {
+                reset_at: Some(reset_at),
+                status: 429,
+                message: "日池已用尽".to_string(),
+                upstream_code: Some(4_291_200),
+            });
+
+        let class = BuiltinAdapter(ProviderKind::Raccoon).classify_conversation_error(&error);
+        let UpstreamErrorClass::QuotaLimited { reset_at: carried, status, upstream_code, .. } = &class
+        else {
+            panic!("默认实现必须透传已有分类，实际 {class:?}");
+        };
+        assert_eq!(*carried, Some(reset_at), "恢复时刻必须原样带回来");
+        assert_eq!(*status, 429, "状态码取分类里的那个（可能被分小，例如 402 → 429）");
+        assert_eq!(*upstream_code, Some(4_291_200), "上游业务码也要带回来");
+    }
+
+    /// 没有携带分类的旧错误保持原样：默认实现仍旧给 `Fatal`。
+    ///
+    /// 这条防的是「为了透传而把所有错误都当成额度问题」—— 那会让真正的
+    /// 请求错误也触发换号与冷却。
+    #[test]
+    fn an_error_without_a_class_stays_fatal() {
+        let error = GatewayError::with_status(400, "请求体非法");
+        let class = BuiltinAdapter(ProviderKind::Raccoon).classify_conversation_error(&error);
+        assert!(
+            matches!(class, UpstreamErrorClass::Fatal { .. }),
+            "未携带分类的错误应当保持 Fatal，实际 {class:?}"
+        );
+    }
+}

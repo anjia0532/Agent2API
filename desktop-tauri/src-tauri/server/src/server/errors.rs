@@ -79,6 +79,29 @@ impl GatewayError {
         Self::with_status(400, message)
     }
 
+    /// 挂上**上游错误分类**（插件家在异步边界算出来的那份）。
+    ///
+    /// ── 为什么必须有这条通道（issue #489）────────────────────────
+    /// 插件家的错误分类是**异步**算的（`classify` RPC）。之后编排层决定
+    /// 「换号 / 冷却」时调的是**同步**钩子 `classify_conversation_error` ——
+    /// 同步钩子发不出 RPC，**只能读**这里挂的分类。
+    /// 分类一旦在这个边界被丢掉，`is_quota_limit()` 就只剩
+    /// 「429 / 6004」这条回退判据，于是「上游藏在 HTTP 200 正文里、
+    /// 被网关折成 403 的日池耗尽」会被判成 `Fatal`：不换号、不冷却，
+    /// 同一个已耗尽的账号被反复选中。
+    pub fn with_conversation_class(
+        mut self,
+        class: crate::server::core::providers::adapter::UpstreamErrorClass,
+    ) -> Self {
+        self.conversation_class = Some(class);
+        self
+    }
+
+    /// 读回那份分类（编排层与序列化都在用）。
+    pub fn conversation_class(&self) -> Option<&crate::server::core::providers::adapter::UpstreamErrorClass> {
+        self.conversation_class.as_ref()
+    }
+
     /// 挂上错误码字符串（Node 版手写 body 里的 `code` 字段）
     pub fn with_code(mut self, code: impl Into<String>) -> Self {
         self.code = Some(code.into());
