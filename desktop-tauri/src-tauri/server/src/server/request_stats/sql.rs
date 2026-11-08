@@ -987,3 +987,40 @@ pub(super) fn delete_expired_requests(conn: &Connection, cutoff: i64) -> rusqlit
 //
 // `request_daily` 的全部语句已拆到 `daily.rs`（列常量、编解码与
 // select / upsert / delete / trim），拆分理由见该文件的模块头。
+
+/// 按模型聚合 token（价格估算的**汇总**侧用）。
+///
+/// ── 为什么单独一条 SQL 而不是复用 `select_summary_rows` ──────────
+/// 那条只捞 24 小时窗口、而且不返回 `completion_tokens`（能从 total 反推，
+/// 但 `total` 缺失时就不准）。汇总成本要的是「按选定范围、按模型」的三项
+/// 之和，让 SQLite 做 `GROUP BY` 比把几万行拉进内存再归并便宜两个数量级。
+///
+/// ── 为什么先把 token 求和、再乘单价是成立的 ────────────────
+/// 计价对每一种 token 都是**线性**的：`Σ(a_i × p) = (Σa_i) × p`。
+/// 唯一不等价的地方是**按输入长度分档**的价表 —— 逐行取档与先求和再取档
+/// 可能落在不同档。这个偏差在调用方（`request_stats::cost_summary`）的
+/// 注释里写明，属于已知近似。
+///
+/// 返回 `(model, upstream_model, prompt, completion, cache_read)`；
+/// 两类模型名都带上，因为价表的 key 是上游规范名，哪个能命中没有规律。
+pub(super) fn sum_tokens_by_model(
+    conn: &Connection,
+    from_ms: i64,
+    to_ms: i64,
+) -> rusqlite::Result<Vec<(String, String, i64, i64, i64)>> {
+    let mut stmt = conn.prepare(
+        "SELECT model, upstream_model, \
+                COALESCE(SUM(prompt_tokens), 0), \
+                COALESCE(SUM(completion_tokens), 0), \
+                COALESCE(SUM(cache_read_tokens), 0) \
+         FROM requests \
+         WHERE ts >= ?1 AND ts < ?2 AND is_test = 0 \
+         GROUP BY model, upstream_model",
+    )?;
+    let mut rows = stmt.query(params![from_ms, to_ms])?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        out.push((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?));
+    }
+    Ok(out)
+}
