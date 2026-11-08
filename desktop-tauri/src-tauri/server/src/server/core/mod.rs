@@ -68,6 +68,7 @@ pub mod agents;
 // 跨渠道聚合路由的选型内核（纯函数）：临期升序 + 倍率升序 + 手工位次严格优先。
 // 只有排序口径，不含探活与转发，见该模块头。
 pub mod aggregate_core;
+pub mod aggregate_route;
 pub mod account_transfer;
 pub mod api_keys;
 pub mod auth;
