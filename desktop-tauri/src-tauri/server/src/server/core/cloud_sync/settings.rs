@@ -464,6 +464,8 @@ mod tests {
                 base_url: "https://dav.example.com/dav".to_string(),
                 username: "u".to_string(),
                 password: "x".to_string(),
+                // 自定义 UA 是后加字段（issue #439），测试里用默认值
+                user_agent: String::new(),
             },
             ..CloudSyncSettings::default()
         };
@@ -480,6 +482,8 @@ mod tests {
                 base_url: "https://dav.example.com/dav".to_string(),
                 username: "u".to_string(),
                 password: "x".to_string(),
+                // 自定义 UA 是后加字段（issue #439），测试里用默认值
+                user_agent: String::new(),
             },
             ..CloudSyncSettings::default()
         };

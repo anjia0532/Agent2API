@@ -332,8 +332,11 @@ async fn a_real_413_response_is_sent_once_and_handed_back() {
         &transport,
         &mut budget,
         Some(&capture),
-        &RequestTelemetry::new(),
+        &std::sync::Arc::new(RequestTelemetry::new()),
         false,
+        // 后加的两个参数：图片响应形态与网络策略（本用例都不涉及）
+        None,
+        None,
     )
     .await;
     task.abort();

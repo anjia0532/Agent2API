@@ -1231,14 +1231,12 @@ mod tests {
 
     /// 取回那条明细（本次用例的库里只有一条）
     fn only_row(stats: &RequestStats) -> serde_json::Value {
+        // `RequestQuery` 之后又加了 api_key / client / completed_only / production_only
+        // 四个筛选字段；本用例只关心「库里那一条」，其余保持默认。
         let query = RequestQuery {
             offset: 0,
             limit: Some(5),
-            model: None,
-            provider: None,
-            status: None,
-            start: None,
-            end: None,
+            ..RequestQuery::default()
         };
         let page = stats.query_requests(&query);
         let entries = page.get("entries").and_then(Value::as_array);

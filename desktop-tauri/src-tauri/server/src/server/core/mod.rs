@@ -65,6 +65,9 @@ pub mod account_order;
 pub mod account_store;
 // 本机 AI 客户端的接管注册表（「Agent」页）：客户端定义 + 配置读写
 pub mod agents;
+// 跨渠道聚合路由的选型内核（纯函数）：临期升序 + 倍率升序 + 手工位次严格优先。
+// 只有排序口径，不含探活与转发，见该模块头。
+pub mod aggregate_core;
 pub mod account_transfer;
 pub mod api_keys;
 pub mod auth;

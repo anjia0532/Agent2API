@@ -69,6 +69,9 @@ pub(crate) mod legacy;
 // 聚合计算（日报折算 / 重算 / 报表装配）与维护动作（两模式清理 / 预览 /
 // 数据库压缩）：各自的拆分理由见两个子模块的模块头。
 mod aggregate;
+// 模型价格估算（把 token 用量折算成挂牌价人民币）。与 `credit` 列是两个不同
+// 的问题，见该模块头；纯函数、无 IO，随报表一起单测。
+mod pricing;
 mod daily;
 mod maintenance;
 mod record;

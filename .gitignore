@@ -79,3 +79,8 @@ desktop-tauri/mobile/ios/DerivedData/
 # 提供商插件（独立仓库的本地开发目录，不得进入本仓库历史）
 /agent2api-providers/
 /plugin/
+
+# ── 本地 Docker 试跑的数据目录 ────────────────────────────────────────
+# 里面是 SQLite 账号库（enc1 加密的凭据）+ 插件包，绝不能入库：
+# 一旦提交，账号密钥就永久留在历史里。docker run 时用 -v 挂在 /data。
+/docker-data/
