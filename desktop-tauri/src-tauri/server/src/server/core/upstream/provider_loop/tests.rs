@@ -188,21 +188,52 @@ fn stateful_quota_bookkeeping_ignores_non_quota_classes() {
     assert_eq!(rotate::account_limit_reset_at(&service, &id, "m-fatal"), 0, "非限额分类不该落冷却");
 }
 
+/// 下一个北京零点（毫秒）—— 日池的重置点。
+fn next_beijing_midnight_ms() -> i64 {
+    use chrono::{Datelike, TimeZone as _};
+    let offset = crate::server::core::beijing::offset();
+    let tomorrow = crate::server::core::beijing::now().date_naive() + chrono::Duration::days(1);
+    offset
+        .with_ymd_and_hms(tomorrow.year(), tomorrow.month(), tomorrow.day(), 0, 0, 0)
+        .single()
+        .expect("明天的零点一定存在")
+        .timestamp_millis()
+}
+
 #[test]
 fn codearts_daily_pool_envelope_cools_to_the_boundary_instead_of_ten_minutes() {
     use crate::server::errors::GatewayError;
 
     let (_dir, service, id) = temp_service();
     // 生产库里那条真实文案（HTTP 200 的 SSE 里折出 403，首包门送进会话式分支）
-    let error = GatewayError::with_status(403, "上游报告 InferHub.4291.200：insufficient quota");
+    const MESSAGE: &str = "上游报告 InferHub.4291.200：insufficient quota";
+    // ── 构造方式与生产一致（issue #489 修法之后）──────────────────
+    // 分类是**插件**在异步边界算出来的（它知道「日池在次日北京零点重置」），
+    // 经 `conversation_error()` 挂到 `GatewayError` 上带下来。网关侧已经不再有
+    // CodeArts 的知识，所以「从文案里认出日池耗尽」这条期望本身不成立 ——
+    // 这里要锁的是**分类不会在这个边界被丢掉**。
+    let reset_at = next_beijing_midnight_ms();
+    let error = GatewayError::with_status(403, MESSAGE).with_conversation_class(
+        UpstreamErrorClass::QuotaLimited {
+            reset_at: Some(reset_at),
+            status: 429,
+            message: MESSAGE.to_string(),
+            upstream_code: None,
+        },
+    );
     let class = adapter_for(ProviderKind::CodeArts).classify_conversation_error(&error);
-    let UpstreamErrorClass::QuotaLimited { reset_at: Some(reset_at), .. } = &class else {
-        panic!("福利池耗尽的文案应分类为带恢复时刻的 QuotaLimited，实际 {class:?}");
+    let UpstreamErrorClass::QuotaLimited { reset_at: carried, .. } = &class else {
+        panic!("带分类的错误经过同步钩子后必须仍是 QuotaLimited（issue #489），实际 {class:?}");
     };
+    assert_eq!(
+        *carried,
+        Some(reset_at),
+        "分类与恢复时刻必须原样透传，不能被重新猜成 Fatal"
+    );
     mark_conversation_limited(&service, &id, &single("glm-5.3-flash"), &class, &error.message);
 
     let stored = rotate::account_limit_reset_at(&service, &id, "glm-5.3-flash");
-    assert_eq!(stored, *reset_at, "落库的恢复时刻必须是适配器算出的日池重置点");
+    assert_eq!(stored, reset_at, "落库的恢复时刻必须是适配器算出的日池重置点");
     // ── 断言「是下一个北京零点」，而不是「距现在 > 10 分钟」（2026-10-13 修）──
     //
     // 原断言写的是 `minutes > 10`，本意是「不是 10 分钟兜底常量」；但它有个

@@ -697,6 +697,15 @@ pub trait ProviderAdapter: Send + Sync {
     /// 注意编排层只取这里 QuotaLimited 的**记账**语义（标记冷却后仍按队列
     /// 顺延）—— 不会对同一条错误再套用无状态路径的重试/刷新动作。
     fn classify_conversation_error(&self, error: &GatewayError) -> UpstreamErrorClass {
+        // ── 异步边界算好的分类是**权威**（issue #489）──────────────
+        // 插件家的分类在异步侧算（`classify` RPC），能识别「错误藏在 HTTP 200
+        // 正文里、被折成 403」这类只有插件才知道的情形（日池耗尽、活动额度用尽、
+        // 需要冷却到某个时刻的限流）。这个同步钩子发不出 RPC，所以只要错误身上
+        // 带着那份分类，就直接用它 —— 按 HTTP 状态码重猜一遍会把 403 判成
+        // `Fatal`，而 Fatal 不换号、不冷却。
+        if let Some(class) = error.conversation_class() {
+            return class.clone();
+        }
         UpstreamErrorClass::Fatal {
             status: u16::try_from(error.status_code).unwrap_or(500),
             message: error.message.clone(),

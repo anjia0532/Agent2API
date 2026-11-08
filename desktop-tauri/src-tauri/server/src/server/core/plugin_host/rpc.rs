@@ -644,6 +644,16 @@ impl ProviderAdapter for RpcAdapter {
     }
 
     fn classify_conversation_error(&self, error: &GatewayError) -> UpstreamErrorClass {
+        // ── 先看错误身上有没有**已经算好的**分类（issue #489）──────────
+        // 插件家的分类是**异步**算的（`classify` RPC）：它能识别「错误藏在
+        // HTTP 200 正文里、被折成 403」这类只有插件才知道的情形（日池耗尽、
+        // 活动额度用尽、需要冷却到某个时刻的限流）。
+        // 这个同步钩子发不出 RPC，所以**它算出来的那份就是权威**：直接用，
+        // 别再按 HTTP 状态码重新猜一遍 —— 猜的结果是把 403 判成 Fatal，
+        // 而 Fatal 不换号、不冷却，同一个已耗尽的账号会被反复选中。
+        if let Some(class) = error.conversation_class() {
+            return class.clone();
+        }
         // 新增 scoped runtime 已在异步错误边界完成正式分类；不能重新按 HTTP 429 猜配额。
         if strict::applies(self.id) { return strict::cached_class(self.id, error); }
         // 此钩子同步，不能再发分类 RPC；旧提供商保留既有 429/6004 的记账语义。
@@ -1898,18 +1908,29 @@ async fn collect(
 /// 见 `upstream::provider_loop` 的 `OutboundFailure` 构造：状态码取分类里
 /// 那个（分类器可能把它改小，例如 402 → 429），文案原样用，上游码带上。
 fn conversation_error(status: u16, class: UpstreamErrorClass, body: &Value) -> GatewayError {
-    match class {
+    // ⚠️⚠️ 分类必须**跟着错误一起往下走**（issue #489）。
+    //
+    // 编排层决定「换号 / 冷却」时调的是**同步**钩子
+    // `classify_conversation_error`，它发不出 RPC，只能读
+    // `GatewayError.conversation_class`。这里把分类丢掉，`is_quota_limit()`
+    // 就只剩「429 / 6004」那条回退判据 —— 于是「上游藏在 HTTP 200 正文里、
+    // 被网关折成 403 的日池耗尽」会被判成 `Fatal`：不换号、不冷却，同一个
+    // 已耗尽的账号被反复选中，用户侧就是「一直失败、等很久才好」。
+    let (status_code, text, upstream_code) = match &class {
         UpstreamErrorClass::QuotaLimited { status, message, upstream_code, .. }
         | UpstreamErrorClass::ContentBlocked { status, message, upstream_code }
         | UpstreamErrorClass::Fatal { status, message, upstream_code } => {
-            let text = if message.is_empty() { describe_body(body) } else { message };
-            GatewayError::with_status(status as i32, text).with_optional_code(upstream_code)
+            let text = if message.is_empty() { describe_body(body) } else { message.clone() };
+            (*status, text, *upstream_code)
         }
         UpstreamErrorClass::TokenExpired { message } => {
-            let text = if message.is_empty() { describe_body(body) } else { message };
-            GatewayError::with_status(status as i32, text)
+            let text = if message.is_empty() { describe_body(body) } else { message.clone() };
+            (status, text, None)
         }
-    }
+    };
+    GatewayError::with_status(status_code as i32, text)
+        .with_optional_code(upstream_code)
+        .with_conversation_class(class)
 }
 
 /// 错误体没有可读文案时的兜底（与内置家的 `上游返回 {status}: …` 同形态）。
