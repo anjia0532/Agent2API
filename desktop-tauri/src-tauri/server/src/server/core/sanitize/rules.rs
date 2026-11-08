@@ -196,12 +196,10 @@ fn default_entries() -> Vec<SanitizeRule> {
             "Main branch (you will usually use this for PRs)",
             "Default branch (you will usually use this for PRs)",
         ),
-        (
-            "codex-cli-identity",
-            "Codex CLI",
-            "You are a coding agent running in the Codex CLI, a terminal-based coding assistant.",
-            "You are a coding agent running in the Codex CLI tool, a terminal-based coding assistant.",
-        ),
+        // ⚠️ `codex-cli-identity` 已移到下方**正则**段（issue #472）：
+        // 旧版是 literal 规则，把「…Codex CLI, …」改写成「…Codex CLI tool, …」——
+        // 但 WorkBuddy 国内版对**两个写法都逐字拦截**，改写等于把用户从一种
+        // 400 送进另一种 400（实测两条消息的最小复现，其余头完全一致）。
         (
             "claude-code-feedback",
             "Claude Code feedback",
@@ -314,5 +312,119 @@ fn default_entries() -> Vec<SanitizeRule> {
             ],
         });
     }
+    // issue #472：WorkBuddy 国内版对 Codex CLI 的**两种**首句都逐字拦截
+    // （`…Codex CLI, …` 与 `…Codex CLI tool, …`）。旧规则只在两种写法之间
+    // 换（literal 改写），等于没改。这里用正则同时覆盖两种，并替换成**中性**
+    // 文本 —— 任何上游都不该从正文里认出客户端身份，这正是脱敏规则的目的。
+    // 不匹配 `…Codex CLI.`（无逗号后缀的短句）：那条实测 200，动它反而
+    // 会把能过的请求改坏。
+    //
+    // 单独 push 而不是进上面的循环：循环里的规则只申报 System / Developer /
+    // Assistant 三个角色，而上游的拦截按**文本**扫描、不区分角色（同样的
+    // 指纹出现在 user 内容里一样被拦）。原 literal 规则就是全角色（空 roles），
+    // 这里保持一致。
+    entries.push(SanitizeRule {
+        id: "codex-cli-identity".to_string(),
+        name: "Codex CLI".to_string(),
+        enabled: true,
+        match_type: MatchType::Regex,
+        pattern: r"(?i)You are a coding agent running in the Codex CLI(?: tool)?, a terminal-based coding assistant\.".to_string(),
+        replacement: "You are a helpful AI assistant.".to_string(),
+        repeat: false,
+        roles: Vec::new(),
+    });
     entries
+}
+
+#[cfg(test)]
+mod codex_identity_tests {
+    use super::*;
+
+    /// 用内置规则跑一遍 system 文本，返回改写结果。
+    fn rewritten(text: &str) -> String {
+        let rules = RuleSet::compile(default_entries()).expect("内置规则必须有效");
+        let body = serde_json::json!({
+            "messages": [{ "role": "system", "content": text }]
+        });
+        match crate::server::core::sanitize::sanitize_body(&body, &rules) {
+            Some((next, _hits)) => next["messages"][0]["content"]
+                .as_str()
+                .expect("改写后仍是字符串")
+                .to_string(),
+            None => text.to_string(),
+        }
+    }
+
+    /// issue #472 的核心断言：**两种**被拦写法经脱敏后都不得再出现。
+    ///
+    /// 旧规则只在两种写法之间换（`…CLI, …` → `…CLI tool, …`），而国内版上游对
+    /// 两个都逐字拦截 —— 这条用例对两种输入都断言「改写后不含任一被拦指纹」，
+    /// 旧规则在第二个断言上必红。
+    #[test]
+    fn both_blocked_codex_identity_variants_are_neutralised() {
+        let blocked = [
+            "You are a coding agent running in the Codex CLI, a terminal-based coding assistant.",
+            "You are a coding agent running in the Codex CLI tool, a terminal-based coding assistant.",
+        ];
+        for text in blocked {
+            let out = rewritten(text);
+            assert!(
+                !out.contains("Codex CLI"),
+                "改写后不得再含被拦指纹。输入：{text}\n输出：{out}"
+            );
+            assert!(
+                out.contains("helpful AI assistant"),
+                "应当替换成中性文本。输入：{text}\n输出：{out}"
+            );
+        }
+    }
+
+    /// 大小写混合也要能匹配（正则带 `(?i)`）—— 客户端或中间层可能改写大小写。
+    #[test]
+    fn the_match_is_case_insensitive() {
+        let out = rewritten(
+            "YOU ARE A CODING AGENT RUNNING IN THE CODEX CLI TOOL, A TERMINAL-BASED CODING ASSISTANT.",
+        );
+        assert!(!out.contains("CODEX"), "实际：{out}");
+    }
+
+    /// 短句 `…Codex CLI.`（无逗号后缀）实测 **200**，不能动它 ——
+    /// 改了反而把能过的请求改坏。
+    #[test]
+    fn the_short_variant_is_left_alone() {
+        let text = "You are a coding agent running in the Codex CLI.";
+        assert_eq!(rewritten(text), text, "短句不该被改写");
+    }
+
+    /// 完全无关的文本不该被这条规则碰到（`sanitize_body` 返回 None）。
+    #[test]
+    fn an_unrelated_text_is_untouched() {
+        let text = "You are a helpful assistant.";
+        assert_eq!(rewritten(text), text);
+    }
+
+    /// 长会话里首句只出现一次也生效（issue 的真实场景是 252 条消息）。
+    #[test]
+    fn it_works_inside_a_long_conversation() {
+        let messages: Vec<serde_json::Value> = (0..250)
+            .map(|index| {
+                serde_json::json!({
+                    "role": if index % 2 == 0 { "user" } else { "assistant" },
+                    "content": format!("消息 {index}"),
+                })
+            })
+            .chain(std::iter::once(serde_json::json!({
+                "role": "user",
+                "content": "You are a coding agent running in the Codex CLI, a terminal-based coding assistant. 请继续",
+            })))
+            .collect();
+        let rules = RuleSet::compile(default_entries()).expect("内置规则必须有效");
+        let body = serde_json::json!({ "messages": messages });
+        let (next, hits) = crate::server::core::sanitize::sanitize_body(&body, &rules)
+            .expect("长会话里应当有命中");
+        let last = next["messages"].as_array().unwrap().last().unwrap();
+        let content = last["content"].as_str().unwrap();
+        assert!(!content.contains("Codex CLI"), "实际：{content}");
+        assert_eq!(hits.len(), 1, "只应命中一次：{hits:?}");
+    }
 }
