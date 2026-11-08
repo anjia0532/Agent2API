@@ -847,18 +847,49 @@ fn rewrite_body(body: &Value, provider_id: &str, requested: &str) -> (Value, Opt
                 ),
             );
         } else {
-            model_rules::clear_reasoning_controls(&mut outbound);
-            if let Some(object) = outbound.as_object_mut() {
-                object.insert(
-                    "reasoning_effort".to_string(),
-                    Value::String(level.to_string()),
-                );
-                logging::verbose(
-                    "[CustomProvider]",
-                    &format!(
-                        "provider={provider_id} 映射 {requested} 覆盖思考等级 reasoning_effort={level}"
-                    ),
-                );
+            // ── 按上游协议选字段名（issue #526）──────────────────────────
+            //
+            // `protocol=anthropic` 的上游不认 `reasoning_effort`（那是 OpenAI 的
+            // 字段名），要的是 `output_config.effort`；而且新一代模型（Opus 5 /
+            // Sonnet 5 / Fable 5）明确拒收旧格式 `thinking:{type:"enabled"}`，
+            // 会在网关这一层就把本来正常的 `adaptive` 请求折成 400。
+            //
+            // 关键差别：Anthropic 上游**不能**先 `clear_reasoning_controls` ——
+            // 那会把客户端已经发对的 `thinking:{type:"adaptive"}` 删掉，然后
+            // 我们再也无从得知「客户端本来要 adaptive」。所以这条分支保留
+            // 客户端原有的 thinking，只规范化顶层 generation 参数。
+            let anthropic = crate::server::core::custom_providers::protocol_of(provider_id)
+                .is_some_and(|protocol| protocol.eq_ignore_ascii_case("anthropic"));
+            if anthropic {
+                if let Some(object) = outbound.as_object_mut() {
+                    let wire = object
+                        .get("model")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    super::anthropic_thinking::normalize(object, level, &wire);
+                    logging::verbose(
+                        "[CustomProvider]",
+                        &format!(
+                            "provider={provider_id} 映射 {requested} 思考等级 {level} \
+                             → output_config.effort（anthropic 上游）"
+                        ),
+                    );
+                }
+            } else {
+                model_rules::clear_reasoning_controls(&mut outbound);
+                if let Some(object) = outbound.as_object_mut() {
+                    object.insert(
+                        "reasoning_effort".to_string(),
+                        Value::String(level.to_string()),
+                    );
+                    logging::verbose(
+                        "[CustomProvider]",
+                        &format!(
+                            "provider={provider_id} 映射 {requested} 覆盖思考等级 reasoning_effort={level}"
+                        ),
+                    );
+                }
             }
         }
     }
