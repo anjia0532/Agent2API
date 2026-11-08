@@ -160,7 +160,17 @@ pub async fn launch_and_wait(
     let deadline = std::time::Instant::now() + timeout;
     loop {
         tokio::time::sleep(Duration::from_millis(200)).await;
-        let detail = storage::detail(&id)?;
+        // ⚠️ 必须放进 spawn_blocking：storage::detail 是**阻塞**的 `db.with()`
+        // （同步 rusqlite 单连接 + std::sync::Mutex）。直接在 async 里调它，
+        // 一旦 db 锁被别处持有（例如 modelRefresh 执行体），当前 worker 线程
+        // 就被占死 —— 而 worker 是有数的，占满之后连 /health 都失败，
+        // 表现为「整个服务假死，看门狗每隔一小时重启一次」。
+        //
+        // 放进 blocking pool 后：等待发生在专用阻塞线程上，worker 让得出去。
+        let snapshot = id.clone();
+        let detail = tokio::task::spawn_blocking(move || storage::detail(&snapshot))
+            .await
+            .map_err(|error| format!("等待维护任务时任务池出错：{error}"))??;
         if detail.run.finished_at.is_some() || std::time::Instant::now() >= deadline {
             return Ok(detail);
         }
