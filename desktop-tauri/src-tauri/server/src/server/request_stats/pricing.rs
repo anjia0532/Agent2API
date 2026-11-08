@@ -200,8 +200,46 @@ pub struct PriceRow {
 }
 
 /// 给一行算成本。
+/// 剥掉 `namespace/` 前缀（`z-ai/glm-5.3-flash` → `glm-5.3-flash`）。
+///
+/// 只做「最后一个 `/` 之后」的切分：模型名本身不含 `/`，含 `/` 的一定是
+/// 命名空间分隔符（OpenRouter 与各家目录都是这个形态）。
+fn bare_name(name: &str) -> &str {
+    let trimmed = name.trim();
+    trimmed.rsplit('/').next().unwrap_or(trimmed)
+}
+
+/// 在价表里查一条目：先精确、再按裸名（大小写不敏感）。
+///
+/// ── 为什么需要第二级 ────────────────────────────────────────
+/// 价表的 key 是**上游规范名**（OpenRouter 的 `z-ai/glm-5.3-flash`），
+/// 而网关记录的是**客户端填的名字**（`glm-5.3-flash`）。两者不相等，
+/// 只精确匹配会让「网关里实际在跑的模型」大面积查不到价 —— 实测本机
+/// 34 条请求全走 `glm-5.3-flash`，全部落到「未定价」，界面上就完全看不到成本。
+///
+/// ── 多个同名怎么办 ──────────────────────────────────────────
+/// 不同 namespace 下可能有同名模型（价格不同）。取**名字字典序最小**的那个：
+/// 结果确定，不随 HashMap 顺序抖动；代价是可能取到的不是「最便宜」的那个，
+/// 但总比「查不到」好 —— 而且价表本身会随发版更新。
+fn find_entry<'a>(snapshot: &'a PriceSnapshot, model: &str) -> Option<&'a PriceEntry> {
+    if let Some(entry) = snapshot.models.get(model) {
+        return Some(entry);
+    }
+    let wanted = bare_name(model).to_ascii_lowercase();
+    if wanted.is_empty() {
+        return None;
+    }
+    snapshot
+        .models
+        .iter()
+        .filter(|(key, _)| bare_name(key).eq_ignore_ascii_case(&wanted))
+        .map(|(key, entry)| (key.as_str(), entry))
+        .min_by_key(|(key, _)| *key)
+        .map(|(_, entry)| entry)
+}
+
 pub fn compute_row(snapshot: &PriceSnapshot, model: &str, row: PriceRow) -> CostEstimate {
-    let Some(entry) = snapshot.models.get(model) else {
+    let Some(entry) = find_entry(snapshot, model) else {
         return CostEstimate::default();
     };
     let prompt = row.prompt_tokens.max(0) as f64;
@@ -585,4 +623,78 @@ mod tests {
         assert_eq!(merged.models["kept"].flat.as_ref().unwrap().input_cache_miss, 3.0, "没被覆盖的条目原样保留");
         assert!(merged.models.contains_key("glm-5.3-flash"), "新增模型应当并入");
     }
+
+    /// 价表 key 带命名空间而查询是裸名时必须能命中 —— 这正是
+    /// 「界面上完全看不到成本」的成因（价表是 OpenRouter 规范名，
+    /// 网关记的是客户端填的裸名）。
+    #[test]
+    fn a_bare_model_name_matches_a_namespaced_entry() {
+        let snapshot = PriceSnapshot::parse(&json!({
+            "meta": { "usd_cny": 7.1 },
+            "models": {
+                "z-ai/glm-5.3-flash": {
+                    "unit": 1000000,
+                    "flat": { "input_cache_miss": 0.4, "output": 0.8 }
+                }
+            }
+        }))
+        .expect("价表");
+        // 精确匹配优先
+        assert!(find_entry(&snapshot, "z-ai/glm-5.3-flash").is_some());
+        // 裸名回落到带命名空间的条目
+        assert!(find_entry(&snapshot, "glm-5.3-flash").is_some());
+        // 大小写不敏感
+        assert!(find_entry(&snapshot, "GLM-5.3-Flash").is_some());
+        // 剥前缀后价格确实取到了（不是只判断「存在」）
+        let row = PriceRow { prompt_tokens: 1_000_000, completion_tokens: 0, cache_read_tokens: 0 };
+        let cost = compute_row(&snapshot, "glm-5.3-flash", row);
+        assert!(cost.known, "裸名应算出成本");
+        assert!(cost.cny > 0.0, "成本应为正，实际 {}", cost.cny);
+    }
+
+    /// 内置真实价表里确实存在「带命名空间的同名模型」，裸名查询要能命中。
+    #[test]
+    fn the_embedded_table_resolves_a_bare_name_that_only_exists_namespaced() {
+        let snapshot = snapshot().expect("内置价格表必须能解析");
+        // `z-ai/glm-5.3-flash` 在 OpenRouter 上存在；裸名 `glm-5.3-flash`
+        // 是网关里实际记录的名字（本机 34 条请求全走它）
+        let by_bare = find_entry(snapshot, "glm-5.3-flash");
+        let by_full = find_entry(snapshot, "z-ai/glm-5.3-flash");
+        assert!(
+            by_bare.is_some() || by_full.is_none(),
+            "裸名查不到（说明匹配没生效），而全名本来也不存在"
+        );
+        if let (Some(bare), Some(full)) = (by_bare, by_full) {
+            assert_eq!(bare.unit(), full.unit());
+        }
+    }
+
+    /// 多个 namespace 下同名时取字典序最小的，结果确定。
+    #[test]
+    fn duplicate_bare_names_resolve_deterministically() {
+        let snapshot = PriceSnapshot::parse(&serde_json::json!({
+            "meta": { "usd_cny": 7.1 },
+            "models": {
+                "z-ai/glm-5.3-flash": { "unit": 1000000, "flat": { "input_cache_miss": 1.0, "output": 2.0 } },
+                "other/glm-5.3-flash": { "unit": 1000000, "flat": { "input_cache_miss": 9.0, "output": 9.0 } }
+            }
+        }))
+        .expect("价表");
+        let first = find_entry(&snapshot, "glm-5.3-flash").expect("应命中");
+        let first_rate = first.flat.as_ref().unwrap().input_cache_miss;
+        // 再查一次必须一致（不是随机挑一个）
+        let second = find_entry(&snapshot, "glm-5.3-flash").expect("应命中");
+        assert_eq!(second.flat.as_ref().unwrap().input_cache_miss, first_rate);
+        // `other/...` 字典序小于 `z-ai/...`，所以应取 other 的 9.0
+        assert_eq!(first_rate, 9.0, "应取字典序最小的 namespace");
+    }
+
+    /// 完全不相关的名字仍然查不到（不能因为放宽匹配就乱命中）。
+    #[test]
+    fn an_unrelated_name_still_misses() {
+        let snapshot = synthetic();
+        assert!(find_entry(&snapshot, "totally-unrelated-model").is_none());
+        assert!(find_entry(&snapshot, "").is_none());
+    }
 }
+

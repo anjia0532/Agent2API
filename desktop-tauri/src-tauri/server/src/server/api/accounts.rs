@@ -1253,10 +1253,16 @@ async fn refresh_provider_account(state: &ServerState, id: &str, kind: ProviderK
 /// 为什么这条判断不能留在壳侧、为什么失败不给非 2xx，
 /// 见 `core::credential_maintenance` 的模块头与本文件那条 400 的说明。
 pub async fn refresh_expiring_accounts(state: &ServerState) -> Response {
-    match crate::server::core::maintenance::execute(
-        state.store(),
+    // 后台执行 + 异步轮询（见 `maintenance::launch_and_wait` 的说明）：
+    // 直接 `execute` 会把整个批量刷新压在 HTTP 请求上 —— 串行刷 N 个账号
+    // 时请求一直挂着，界面看着就是「点一下就卡死」。
+    match crate::server::core::maintenance::launch_and_wait(
+        state.store().clone(),
         crate::server::core::maintenance::Request::full(crate::server::core::maintenance::CREDENTIAL, true),
-    ).await {
+        std::time::Duration::from_secs(180),
+    )
+    .await
+    {
         Ok(detail) => ok_json(crate::server::core::maintenance::types::report(&detail)),
         Err(error) => management_error(400, error),
     }

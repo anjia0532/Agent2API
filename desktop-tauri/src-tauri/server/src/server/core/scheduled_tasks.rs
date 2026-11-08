@@ -305,10 +305,18 @@ async fn run_backend(
         } else { "已完成版本检查".to_string() });
     }
     if matches!(task.id, TASK_CREDENTIAL_MAINTENANCE | TASK_MODEL_REFRESH) {
-        let detail = crate::server::core::maintenance::execute(
-            store,
+        // 后台执行 + 异步轮询（见 `maintenance::launch_and_wait`）：
+        // 直接 `execute` 会把整批刷新压在这个调度循环上，而批量的每一步都
+        // 走**阻塞**的 `db.with()` —— 一旦某个账号的上游刷新卡住，
+        // 持锁不放，其它 tokio worker 等锁，整个 runtime 停摆（表现为
+        // /health 也失败、看门狗重启）。丢到后台 + 异步轮询后，
+        // 等待不再占着 worker。
+        let detail = crate::server::core::maintenance::launch_and_wait(
+            store.clone(),
             crate::server::core::maintenance::Request::full(task.id, manual),
-        ).await?;
+            std::time::Duration::from_secs(300),
+        )
+        .await?;
         return Ok(crate::server::core::maintenance::summary(&detail));
     }
     Err("未知后端任务".to_string())

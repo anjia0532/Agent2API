@@ -110,7 +110,16 @@ pub async fn refresh_models(State(state): State<ServerState>, body: Bytes) -> Re
     request.accounts = accounts;
     request.providers = providers;
     request.metadata = false;
-    let detail = match crate::server::core::maintenance::execute(store, request).await {
+    // 后台执行 + 异步轮询（见 `maintenance::launch_and_wait` 的说明）：
+    // 直接 `execute` 会把整个批量刷新压在 HTTP 请求上 —— 串行刷 N 家提供商
+    // 时请求一直挂着，界面看着就是「点一下就卡死」。
+    let detail = match crate::server::core::maintenance::launch_and_wait(
+        state.store().clone(),
+        request,
+        std::time::Duration::from_secs(180),
+    )
+    .await
+    {
         Ok(detail) => detail,
         Err(error) => return crate::server::api::maintenance::error_response(400, error),
     };

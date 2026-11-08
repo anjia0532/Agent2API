@@ -4,6 +4,7 @@ pub mod storage;
 pub mod types;
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use serde_json::{json, Map, Value};
 
@@ -132,6 +133,40 @@ pub async fn execute(store: &AccountStore, request: Request) -> Result<Detail, S
     let (guard, recorder) = prepare(&request)?;
     complete(store, request, guard, recorder).await
 }
+/// 后台执行 + 异步轮询，跑完（或超时）后返回结果。
+///
+/// ## 与 [`execute`] 的分工
+/// `execute` 同步等待整个批量任务 —— 串行刷 N 个账号时 HTTP 请求一直挂着，
+/// 界面看着就是「点一下就卡死」。本函数把执行丢到后台（[`launch`]），
+/// 然后**异步**轮询执行记录：等待用 `tokio::time::sleep` 让出 worker，
+/// 不持锁死等。
+///
+/// ## 超时也返回
+/// 超时后返回**当前**的记录（`results` 可能是部分）。调用方据此如实告诉用户
+/// 「还在跑」，而不是无限挂着 —— 一个永远不返回的 HTTP 请求比一个
+/// 「还在跑」的响应难查得多。
+///
+/// ## 为什么轮询用的 `storage::detail` 不会卡住
+/// 它是单行读（`SELECT ... WHERE id=?1`），耗时是微秒级；即便库里正有别的事务，
+/// 单行读也只等一次锁。真正的风险在**执行体**内部（那是上游网络请求），
+/// 而它已经不占着 HTTP 请求了。
+pub async fn launch_and_wait(
+    store: AccountStore,
+    request: Request,
+    timeout: Duration,
+) -> Result<Detail, String> {
+    let started = launch(store, request)?;
+    let id = started.run.id.clone();
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let detail = storage::detail(&id)?;
+        if detail.run.finished_at.is_some() || std::time::Instant::now() >= deadline {
+            return Ok(detail);
+        }
+    }
+}
+
 
 async fn complete(
     store: &AccountStore,
