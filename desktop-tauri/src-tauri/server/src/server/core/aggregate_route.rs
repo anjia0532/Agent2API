@@ -259,3 +259,145 @@ mod tests {
         assert!(expand(parse("auto/gemini").unwrap(), candidates).is_empty());
     }
 }
+
+// ── 组合层：族匹配 → 排序 ──────────────────────────────────────
+
+use super::aggregate_core::{rank_candidates, Expiry, RankedCandidate};
+
+/// 一条**可参与聚合选型**的真实候选。
+///
+/// `provider` / `real_id` 之外的两项（`expiry` / `price`）由调用方从各渠道的
+/// 目录与额度状态里采出来 —— 本模块不做任何探测，理由见模块头。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Available {
+    /// 渠道 id（转发时用它选账号）
+    pub provider: String,
+    /// 该渠道下的真实 model id（转发时用它替换虚拟名）
+    pub real_id: String,
+    /// 该渠道这张卡/这份额度的最早失效时刻
+    pub expiry: Expiry,
+    /// 倍率（千分位整数，见 `aggregate_core::price_factor_from_name`）
+    pub price: Option<u32>,
+}
+
+impl Available {
+    /// 便于调用方就地构造。
+    pub fn new(provider: impl Into<String>, real_id: impl Into<String>, expiry: Expiry, price: Option<u32>) -> Self {
+        Self { provider: provider.into(), real_id: real_id.into(), expiry, price }
+    }
+}
+
+/// 聚合选型的**最终决策**：给定虚拟名与全部真实候选，返回按优先级排好的目标表。
+///
+/// ## 顺序即优先级
+/// 返回的第一条就是**该用**的候选；后续几条是失败后依次回退的顺序。
+/// 排序规则完全交给 [`rank_candidates`]（临期升序 → 同档倍率升序 → 手工位次
+/// 严格优先），本函数只负责「按族筛掉不该参与的」。
+///
+/// ## 为什么不用 `expand` + 再排
+/// `expand` 返回 `(&str, &str)` 对，丢掉了 `expiry` / `price` —— 那正是排序仅有的
+/// 两个依据。所以排序这条路上直接用 [`Available`]，`expand` 留给只关心成员集合
+/// 的场景（例如界面上「这一族有哪些模型」）。
+///
+/// ## 空表
+/// 一族一个可用候选都没有时返回空表，**不回退到别的族**：用户写了
+/// `auto/kimi` 却拿到 DeepSeek 的回答，比收到一个明确的「Kimi 没有可用账号」糟得多。
+pub fn plan(
+    spec: AggregateSpec,
+    available: &[Available],
+    manual_rank: Option<&dyn Fn(&RankedCandidate) -> Option<u32>>,
+) -> Vec<RankedCandidate> {
+    let matched: Vec<RankedCandidate> = available
+        .iter()
+        .filter(|item| spec.accepts(&item.real_id))
+        .map(|item| RankedCandidate {
+            provider: item.provider.clone(),
+            real_id: item.real_id.clone(),
+            expiry: item.expiry,
+            price: item.price,
+        })
+        .collect();
+    rank_candidates(&matched, manual_rank)
+}
+
+#[cfg(test)]
+mod plan_tests {
+    use super::*;
+
+    fn available(provider: &str, real_id: &str, expiry: Expiry, price: Option<u32>) -> Available {
+        Available::new(provider, real_id, expiry, price)
+    }
+
+    /// 族过滤与临期排序**同时**生效：这是组合层存在的全部理由。
+    #[test]
+    fn a_family_plan_filters_then_orders_by_expiry() {
+        let candidates = vec![
+            available("workbuddy", "deepseek-v4.1-flash", Expiry::Never, None),
+            available("code", "deepseek-v4.1-flash", Expiry::At(1_000), None),
+            available("trae", "deepseek-v4.1-flash", Expiry::At(2_000), None),
+            // 不属这一族，必须被筛掉
+            available("workbuddy", "qwen3.7-max", Expiry::At(500), None),
+        ];
+        let plan = plan(parse("auto/deepseek").unwrap(), &candidates, None);
+        let order: Vec<&str> = plan.iter().map(|row| row.provider.as_str()).collect();
+        assert_eq!(order, vec!["code", "trae", "workbuddy"], "早失效的先烧，永久的最后、且没有 qwen");
+    }
+
+    /// 同族同临期时按倍率升序（挑便宜的先烧）。
+    #[test]
+    fn a_plan_breaks_expiry_ties_by_price() {
+        let candidates = vec![
+            available("dear", "deepseek-v4.1-flash", Expiry::At(1_000), Some(1_500)),
+            available("cheap", "deepseek-v4.1-flash", Expiry::At(1_000), Some(500)),
+        ];
+        let plan = plan(parse("auto/deepseek").unwrap(), &candidates, None);
+        assert_eq!(plan[0].provider, "cheap");
+    }
+
+    /// `auto` 不筛族，全部参与排序。
+    #[test]
+    fn auto_includes_every_family() {
+        let candidates = vec![
+            available("a", "deepseek-v4.1-flash", Expiry::At(2_000), None),
+            available("b", "qwen3.7-max", Expiry::At(1_000), None),
+            available("c", "kimi-k3.1-pro", Expiry::At(3_000), None),
+        ];
+        let plan = plan(AggregateSpec::Auto, &candidates, None);
+        let order: Vec<&str> = plan.iter().map(|row| row.provider.as_str()).collect();
+        assert_eq!(order, vec!["b", "a", "c"]);
+    }
+
+    /// `Unusable` 的候选不进结果（那是「本次不可用」，不是「排在最后」）。
+    #[test]
+    fn unusable_candidates_never_reach_the_plan() {
+        let candidates = vec![
+            available("dead", "deepseek-v4.1-flash", Expiry::Unusable, None),
+            available("live", "deepseek-v4.1-flash", Expiry::Never, None),
+        ];
+        let plan = plan(parse("auto/deepseek").unwrap(), &candidates, None);
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].provider, "live");
+    }
+
+    /// 手工位次严格优先于临期：用户拖过的渠道必须排在最前，哪怕它临期更晚。
+    #[test]
+    fn a_manual_rank_outranks_expiry() {
+        let candidates = vec![
+            available("soon", "deepseek-v4.1-flash", Expiry::At(1_000), None),
+            available("dragged", "deepseek-v4.1-flash", Expiry::At(9_999), None),
+        ];
+        let manual = |row: &RankedCandidate| -> Option<u32> {
+            (row.provider == "dragged").then_some(0)
+        };
+        let plan = plan(parse("auto/deepseek").unwrap(), &candidates, Some(&manual));
+        assert_eq!(plan[0].provider, "dragged");
+    }
+
+    /// 一族全空 ⇒ 空表，**不回退到别的族**。
+    #[test]
+    fn an_empty_family_returns_an_empty_plan_without_falling_back() {
+        let candidates = vec![available("a", "deepseek-v4.1-flash", Expiry::Never, None)];
+        let plan = plan(parse("auto/kimi").unwrap(), &candidates, None);
+        assert!(plan.is_empty(), "写了 kimi 就不该拿到 deepseek 的候选");
+    }
+}
