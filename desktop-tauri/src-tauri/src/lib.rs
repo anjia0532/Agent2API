@@ -248,6 +248,9 @@ pub fn ensure_main_window(app: &AppHandle) -> Option<tauri::WebviewWindow> {
 }
 
 pub fn run() {
+    // 崩溃现场（issue #463）：`panic = "abort"` 下进程会无声秒退，
+    // 这条钩子让 panic 位置先落进日志再 abort。必须早于任何可能 panic 的初始化。
+    agent2api_server::server::crash_report::install();
     let mut builder = tauri::Builder::default();
 
     // 单实例必须第一个注册：插件按注册顺序执行，晚于其它插件时，

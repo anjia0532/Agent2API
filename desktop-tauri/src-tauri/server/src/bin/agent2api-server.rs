@@ -81,6 +81,10 @@ struct Running {
 }
 
 fn main() -> ExitCode {
+    // 崩溃现场（issue #463）：`panic = "abort"` 下进程会无声秒退，
+    // 这条钩子让 panic 位置先落进日志再 abort。必须排在所有子命令分支之前 ——
+    // `--systemd-updater` / `--windows-updater` 也会 panic，同样需要现场。
+    agent2api_server::server::crash_report::install();
     if std::env::args().nth(1).as_deref() == Some("--systemd-updater") {
         return ExitCode::from(agent2api_server::server::core::update::systemd::run_helper() as u8);
     }

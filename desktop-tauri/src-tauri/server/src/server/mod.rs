@@ -142,6 +142,7 @@ pub mod config;
 pub mod config_migration;
 mod compression;
 pub mod core;
+pub mod crash_report;
 pub mod db;
 pub mod errors;
 pub mod http;
