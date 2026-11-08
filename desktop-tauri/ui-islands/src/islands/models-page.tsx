@@ -28,6 +28,7 @@ import {
   visibleColumns,
 } from './models-panel-state'
 import { t } from '../i18n'
+import { isOnPage } from './update-shared'
 
 /* ─── 页面本体 ───────────────────────────────── */
 
@@ -181,7 +182,7 @@ function ModelsPage() {
     registerColumnSettings()
     syncHead()
     restoreSavedFilters()
-    if (shared().wbApp?.currentPage === 'gateway') {
+    if (isOnPage('gateway')) {
       // providers.js 排在岛之后加载：refreshAll 发起时它可能还没执行，那次目录刷新会被跳过。
       // 清单落地后补刷一次目录并重绘 —— 目录请求本身并发合并，不会重复打接口
       void refreshAll()

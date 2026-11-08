@@ -14,8 +14,7 @@ import {
 } from '@ui'
 import {
   downloadAsset, handleExternalClick, isSelfUpdate, isManualUpdate, manualUpdateReason, markdownHtml, missingAssetReasonFor,
-  openExternal, safeExternal, shared, serviceUpdateTask, type UpdateInfo,
-} from './update-shared'
+  openExternal, safeExternal, shared, serviceUpdateTask, type UpdateInfo, isOnPage } from './update-shared'
 import { t } from '../i18n'
 import { serviceTaskActive } from './update-systemd'
 import { HtmlContent } from '@ui'
@@ -91,7 +90,7 @@ export function showUpdateModal(
   if (info.pendingRestart === true || serviceTaskActive(serviceUpdateTask(info))) return
   const latest = String(info.latestVersion || '').trim()
   if (!latest) return
-  if (shared().wbApp?.currentPage === 'settings') return
+  if (isOnPage('settings')) return
   if (latest === readSkippedVersion() || latest === promptedUpdateVersion) return
   promptedUpdateVersion = latest
 

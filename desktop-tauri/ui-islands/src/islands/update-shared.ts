@@ -291,6 +291,12 @@ export function onPage(page: string): boolean {
   return !app || app.currentPage === page
 }
 
+/// 当前是否处于某个页面（headless 下恒为 true）。理由见 routing-types 的同名函数。
+export function isOnPage(page: string): boolean {
+  const app = shared().wbApp
+  return !app || app.currentPage === page
+}
+
 export function shared(): SharedWindow {
   return window as unknown as SharedWindow
 }

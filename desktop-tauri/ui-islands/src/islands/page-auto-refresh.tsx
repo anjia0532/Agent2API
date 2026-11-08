@@ -5,6 +5,7 @@ import { createPageRefreshStore, usePageRefreshSettings, type PageRefreshPatch, 
 import { PageAutoRefreshControls } from '../../../ui-shared/page-auto-refresh-controls'
 import '../../../ui-shared/page-auto-refresh.css'
 import '../styles/page-auto-refresh.css'
+import { isOnPage } from './update-shared'
 
 type Host = {
   workbuddyDesktop?: {
@@ -35,7 +36,7 @@ export function usePageAutoRefresh(id: PageRefreshTaskId) {
       if ((event as CustomEvent<string>).detail === pages[id]) void settings.reload()
     }
     const onVisibility = () => {
-      if (!document.hidden && host().wbApp?.currentPage === pages[id]) void settings.reload()
+      if (!document.hidden && isOnPage(pages[id])) void settings.reload()
     }
     window.addEventListener('wb:page', onPage)
     document.addEventListener('visibilitychange', onVisibility)
@@ -61,7 +62,8 @@ export function PageAutoRefresh({ id, ...props }: {
     return () => window.removeEventListener('wb:page', onPage)
   }, [])
   const target = document.getElementById('page-refresh-actions')
-  if (!target || page !== pages[id]) return null
+  if (!target) return null
+  if (host().wbApp && page !== pages[id]) return null
   return createPortal(<PageAutoRefreshControls {...props} t={t}
     notify={(message, kind) => host().wbApp?.toast?.(message, kind)} />, target)
 }

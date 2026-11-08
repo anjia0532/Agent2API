@@ -16,6 +16,7 @@ import {
 import { LogDetail, LogsList } from './logs-list'
 import { DateRangeFields } from './date-range-fields'
 import { PageAutoRefresh, pageRefreshStore, usePageAutoRefresh } from './page-auto-refresh'
+import { isOnPage } from './update-shared'
 
 type PanelHandle = {
   load(options?: LoadOptions): Promise<void>
@@ -216,7 +217,7 @@ function LogsPanel() {
   React.useEffect(() => {
     if (!auto.enabled) return
     const timer = window.setInterval(() => {
-      if (!document.hidden && shared().wbApp?.currentPage === 'logs') void poll()
+      if (!document.hidden && isOnPage('logs')) void poll()
     }, auto.ms)
     return () => window.clearInterval(timer)
   }, [auto.enabled, auto.ms, poll])

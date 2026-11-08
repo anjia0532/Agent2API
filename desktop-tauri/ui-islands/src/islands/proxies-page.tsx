@@ -22,6 +22,7 @@ import { t } from '../i18n'
 import { proxyServiceLabels } from '../../../ui-shared/proxy-usage'
 import { shouldShowProxyRetirement } from '../../../ui-shared/proxy-retirement'
 import { ProxyRetirementDialog } from '../../../ui-shared/proxy-retirement-dialog'
+import { isOnPage } from './update-shared'
 
 let noticeRevision = 0
 const noticeListeners = new Set<() => void>()
@@ -316,6 +317,6 @@ function mount(): void {
   section.dataset.mounted = '1'
   section.replaceChildren()
   createRoot(section).render(<ProxiesPage />)
-  if (wb().wbApp?.currentPage === 'proxies') { enteredPage(); void loadPanel() }
+  if (isOnPage('proxies')) { enteredPage(); void loadPanel() }
 }
 mountOnPage('proxies', PAGE_SELECTOR, mount)

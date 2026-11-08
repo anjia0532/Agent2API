@@ -4,6 +4,7 @@ import { mountOnPage } from '../island-lazy'
 import { t } from '../i18n'
 import { MaintenancePanel } from '../../../ui-shared/maintenance-panel'
 import type { MaintenanceApi, MaintenanceDetail, MaintenanceOverview, MaintenanceQuery, MaintenanceTask, MaintenanceTaskId } from '../../../ui-shared/maintenance-types'
+import { isOnPage } from './update-shared'
 
 type Host = {
   workbuddyDesktop?: {
@@ -36,11 +37,11 @@ const api: MaintenanceApi = {
 }
 
 function AutoMaintenancePage() {
-  const [active, setActive] = React.useState(() => host().wbApp?.currentPage === 'tasks')
+  const [active, setActive] = React.useState(() => isOnPage('tasks'))
   const [revision, refresh] = React.useReducer(value => value + 1, 0)
   React.useEffect(() => {
     const onPage = (event: Event) => setActive((event as CustomEvent<string>).detail === 'tasks')
-    const onRefresh = () => { setActive(host().wbApp?.currentPage === 'tasks'); refresh() }
+    const onRefresh = () => { setActive(isOnPage('tasks')); refresh() }
     window.addEventListener('wb:page', onPage)
     window.addEventListener('wb:maintenance-refresh', onRefresh)
     return () => { window.removeEventListener('wb:page', onPage); window.removeEventListener('wb:maintenance-refresh', onRefresh) }

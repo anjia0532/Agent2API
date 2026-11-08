@@ -160,6 +160,7 @@ import { VisionCompatibilitySettings } from './settings-vision-compat'
 import { SidebarPane } from './sidebar-pane'
 import { t } from '../i18n'
 import { Alert } from '@ui'
+import { isOnPage } from './update-shared'
 
 /**
  * Agent2API · 设置页（React 岛）。
@@ -2565,4 +2566,4 @@ window.wbSettingsPanel = {
 
 // 首屏自持加载：app.js 的 showPage 在脚本加载前已执行过，若上次停留在设置页，
 // 这里补一次加载，避免徽标一直停在「检测中…」
-if (shared().wbApp?.currentPage === 'settings') void load()
+if (isOnPage('settings')) void load()

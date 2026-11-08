@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Alert, Button, Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter } from '@ui'
 import { callJson } from './assistant-state'
-import { shared, type UpdateInfo } from './update-shared'
+import { shared, type UpdateInfo, isOnPage } from './update-shared'
 import { t } from '../i18n'
 
 type PolicyResult = Pick<UpdateInfo, 'forceUpdate' | 'currentVersion' | 'repository'>
@@ -11,9 +11,9 @@ function RequiredUpdate() {
   const [policy, setPolicy] = useState<PolicyResult | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const [onUpdatePage, setOnUpdatePage] = useState(shared().wbApp?.currentPage === 'settings')
+  const [onUpdatePage, setOnUpdatePage] = useState(isOnPage('settings'))
   useEffect(() => {
-    const refresh = () => setOnUpdatePage(shared().wbApp?.currentPage === 'settings')
+    const refresh = () => setOnUpdatePage(isOnPage('settings'))
     const observer = new MutationObserver(refresh)
     document.querySelectorAll('.page').forEach(page => observer.observe(page, { attributes: true, attributeFilter: ['class'] }))
     refresh()
