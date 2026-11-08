@@ -243,6 +243,18 @@ fn resolve_model_for(
         }
     }
     let requested_model = model_field_text(payload);
+    // ── 聚合虚拟名（`auto` / `auto/<族>`）先落成一个真实模型名 ──────────
+    //
+    // 接在这里、而不是改转发链：`providers::router::route_for_forward` 的签名是
+    // `(model) -> Vec<provider>`，它按**模型名**找候选提供商，不知道「跨家同族
+    // 多模型」这回事。把虚拟名在入口处换成真实名之后，下游整条链路（路由组、
+    // 停用判定、广告视图、逐家尝试）一字不改地继续工作。
+    //
+    // 非聚合名（绝大多数请求）只多一次字符串比较，`None` 分支原样返回。
+    let requested_model = match resolve_aggregate_model(state, payload, scope, &requested_model)? {
+        Some(real) => real,
+        None => requested_model,
+    };
     // 空路由也是已登记入口；权限照常检查，具体不可用原因交给组内选路报告。
     if let Some(group) = config::routing_profiles().group_for_model(&requested_model) {
         if !key_scope::allows_model(scope, &requested_model) {
@@ -1051,3 +1063,58 @@ pub fn sha256_hex(body: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests;
+
+/// 把聚合虚拟名（`auto` / `auto/<族>`）解析成一个真实模型名，并写回请求体。
+///
+/// 返回 `Ok(None)` 表示「这不是聚合名」 —— 绝大多数请求走这条分支，除了一次
+/// 字符串比较之外没有任何开销。
+///
+/// ── 为什么只考虑该 Key 允许的模型 ──────────────────────────
+/// 若把 Key 白名单之外的模型也纳入候选，可能挑中一个**必然 404** 的模型：
+/// 用户拿到「模型不存在」，而真正原因是聚合挑错了，排查方向完全被带偏。
+/// 所以候选先按 `key_scope::allows_model` 收窄，再交给 `pick_model`。
+///
+/// ── 一个候选都没有时明确报错 ────────────────────────────────
+/// 不回退到别的族：用户写了 `auto/kimi` 却拿到 DeepSeek 的回答，比收到一句
+/// 「Kimi 当前没有可用模型」糟得多。
+fn resolve_aggregate_model(
+    state: &ServerState,
+    payload: &mut Value,
+    scope: Option<&KeyScope>,
+    requested: &str,
+) -> Result<Option<String>, GatewayError> {
+    let Some(spec) = crate::server::core::aggregate_route::parse(requested) else {
+        return Ok(None);
+    };
+    // 收集 `(渠道, 真实模型 id)`；只留该 Key 允许的模型
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    for (provider, manifest) in crate::server::core::providers::catalog::active_manifests(state.store()) {
+        for model in manifest {
+            let Some(id) = model.get("id") else { continue };
+            let name = crate::server::core::models::shape_value_text(id);
+            if name.trim().is_empty() || !key_scope::allows_model(scope, &name) {
+                continue;
+            }
+            pairs.push((provider.clone(), name));
+        }
+    }
+    let borrowed: Vec<(&str, &str)> = pairs
+        .iter()
+        .map(|(provider, model)| (provider.as_str(), model.as_str()))
+        .collect();
+    match crate::server::core::aggregate_route::pick_model(spec, borrowed) {
+        Some(real) => {
+            if let Some(object) = payload.as_object_mut() {
+                object.insert("model".to_string(), Value::String(real.clone()));
+            }
+            Ok(Some(real))
+        }
+        None => Err(GatewayError::with_status(
+            404,
+            format!(
+                "聚合名 {requested} 当前没有可用模型：该族在目录里没有任何「已启用且这把 Key 允许」的模型。完整列表见 GET /v1/models"
+            ),
+        )
+        .with_code("model_not_found")),
+    }
+}

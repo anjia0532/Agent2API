@@ -401,3 +401,105 @@ mod plan_tests {
         assert!(plan.is_empty(), "写了 kimi 就不该拿到 deepseek 的候选");
     }
 }
+
+/// 把一个聚合虚拟名落成**一个真实模型名**。
+///
+/// 输入是 `(渠道, 真实模型 id)` 的全部对；返回挑中的模型名。
+///
+/// ## 挑选规则
+/// 1. 先按族过滤（`auto` 不过滤）；
+/// 2. 按「能承载它的渠道数」降序 —— 渠道越多，越不容易因为某一家没账号或被
+///    停用而失败；
+/// 3. 渠道数相同时按模型名升序，保证同一份目录**每次挑到同一个**。
+///
+/// ## 为什么必须确定（不能「随便挑一个」）
+/// 目录刷新是会变的，但两次刷新之间同一请求应该打到同一个模型。若按哈希或
+/// 遍历顺序挑，会出现「上一秒答得好、下一秒答得差」这种无法复现的抖动。
+///
+/// 返回 `None` 表示该聚合名当前没有任何候选（调用方据此回「没有可用模型」，
+/// 而不是静默回退到别的族）。
+pub fn pick_model<'a, I>(spec: AggregateSpec, pairs: I) -> Option<String>
+where
+    I: IntoIterator<Item = (&'a str, &'a str)>,
+{
+    let mut counts: std::collections::BTreeMap<String, std::collections::BTreeSet<&str>> =
+        std::collections::BTreeMap::new();
+    for (provider, model) in pairs {
+        if !spec.accepts(model) {
+            continue;
+        }
+        counts.entry(model.to_string()).or_default().insert(provider);
+    }
+    // BTreeMap 已按模型名升序；再按渠道数降序取最大即可得到确定结果
+    counts
+        .into_iter()
+        .max_by(|left, right| {
+            left.1
+                .len()
+                .cmp(&right.1.len())
+                // 家数相同时**名字小的赢**：`max_by` 取后者更大，所以反向比较
+                .then_with(|| right.0.cmp(&left.0))
+        })
+        .map(|(model, _)| model)
+}
+
+#[cfg(test)]
+mod pick_model_tests {
+    use super::*;
+
+    /// 家数多的赢。
+    #[test]
+    fn the_model_offered_by_more_providers_wins() {
+        let pairs = vec![
+            ("a", "deepseek-v4.1-flash"),
+            ("b", "deepseek-v4.1-flash"),
+            ("c", "deepseek-v4-flash"),
+            ("d", "qwen3.7-max"),
+        ];
+        assert_eq!(
+            pick_model(parse("auto/deepseek").unwrap(), pairs).as_deref(),
+            Some("deepseek-v4.1-flash")
+        );
+    }
+
+    /// 家数相同时按名字升序，结果确定（同一份目录每次同一个答案）。
+    #[test]
+    fn ties_are_broken_by_name_so_the_choice_is_stable() {
+        let pairs = vec![("a", "deepseek-v4-flash"), ("b", "deepseek-v4.1-flash")];
+        let first = pick_model(parse("auto/deepseek").unwrap(), pairs.clone());
+        let second = pick_model(parse("auto/deepseek").unwrap(), pairs);
+        assert_eq!(first, second, "两次调用必须一致");
+        assert_eq!(first.as_deref(), Some("deepseek-v4-flash"), "字典序靠前的赢");
+    }
+
+    /// 同一渠道报了两遍不该让它显得「有更多家」。
+    #[test]
+    fn the_same_provider_counted_twice_does_not_inflate_its_weight() {
+        let pairs = vec![
+            ("a", "deepseek-old"),
+            ("a", "deepseek-old"),
+            ("a", "deepseek-old"),
+            ("b", "deepseek-new"),
+            ("c", "deepseek-new"),
+        ];
+        assert_eq!(
+            pick_model(parse("auto/deepseek").unwrap(), pairs).as_deref(),
+            Some("deepseek-new"),
+            "new 有两家、old 只有一家（重复三次仍是一家）"
+        );
+    }
+
+    /// 一族全空 ⇒ None（调用方必须回「没有可用模型」，不能回退到别的族）。
+    #[test]
+    fn an_empty_family_yields_none() {
+        let pairs = vec![("a", "deepseek-v4.1-flash")];
+        assert_eq!(pick_model(parse("auto/kimi").unwrap(), pairs), None);
+    }
+
+    /// `auto` 不限族。
+    #[test]
+    fn auto_considers_every_family() {
+        let pairs = vec![("a", "kimi-k3.1-pro"), ("b", "kimi-k3.1-pro"), ("c", "qwen3.7-max")];
+        assert_eq!(pick_model(AggregateSpec::Auto, pairs).as_deref(), Some("kimi-k3.1-pro"));
+    }
+}
