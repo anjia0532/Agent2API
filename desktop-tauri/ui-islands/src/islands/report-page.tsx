@@ -1,4 +1,5 @@
 import * as React from 'react'
+import { onPage } from './update-shared'
 import { mountOnPage } from '../island-lazy'
 import { createRoot } from 'react-dom/client'
 import { Badge, Empty, SegmentedControl, type SegmentedControlOption, PageHeader, PageTitle, PageDescription } from '@ui'
@@ -302,7 +303,7 @@ function ReportPage() {
     }
     // 首屏自持加载：app.js 的 showPage 在本岛加载前就执行过（脚本排在 app.js 之后），那次调用
     // 还拿不到 window.wbReport；用户上次若停留在报表页，这里必须补一次。不在本页就不打这一枪。
-    if (shared().wbApp?.currentPage === 'overview') void loadPanel({ silent: true })
+    if (onPage('overview')) void loadPanel({ silent: true })
     return () => { handle = null }
   }, [loadPanel, renderData])
 
@@ -315,7 +316,7 @@ function ReportPage() {
     if (!auto.enabled || auto.ms <= 0) return
     const timer = window.setInterval(() => {
       // 只在报表页可见时轮询，避免后台无谓请求
-      if (document.hidden || shared().wbApp?.currentPage !== 'overview') return
+      if (document.hidden || !onPage('overview')) return
       // 上一轮还没回来就跳过这一拍（见 polling 的说明）
       if (polling || loadingRef.current > 0) return
       polling = true

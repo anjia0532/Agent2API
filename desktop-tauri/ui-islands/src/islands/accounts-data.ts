@@ -3,6 +3,7 @@ import {
   type AccountRecord,
   type UsageEntry,
 } from './accounts-shared'
+import { onPage } from './update-shared'
 import {
   isDesktopAccount, isEnabled, isLimitedNow, isRateLimited, supportsUsage,
 } from './accounts-domain'
@@ -143,7 +144,7 @@ let connectionsTimer: ReturnType<typeof setInterval> | null = null
 export function startConnectionsPolling(): void {
   if (connectionsTimer) return
   connectionsTimer = setInterval(() => {
-    if (document.hidden || shared().wbApp?.currentPage !== 'accounts') return
+    if (document.hidden || !onPage('accounts')) return
     void syncConnections()
   }, CONNECTIONS_POLL_MS)
 }

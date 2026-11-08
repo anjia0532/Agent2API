@@ -279,6 +279,18 @@ export type SharedWindow = {
   wbIcons?: { icon?: (name: string, size?: number) => string }
 }
 
+/// 当前是否处于某个页面（headless 下恒为 true）。
+///
+/// `wbApp?.currentPage === page` 是给**桌面壳**做的省电优化：壳里多个页面共存，
+/// 后台页不该继续拉数据。但 headless（Docker / 服务端）只有一个页面，没有
+/// 「后台页」这回事 —— 直接用 `wbApp?.currentPage` 判定会**永远为 false**，
+/// 于是报表、请求日志、账号页的自动刷新**全部静默失效**（不报错、不空白，
+/// 就是永远不更新）。所以：**没有 wbApp 时视为「页面可见」**。
+export function onPage(page: string): boolean {
+  const app = shared().wbApp
+  return !app || app.currentPage === page
+}
+
 export function shared(): SharedWindow {
   return window as unknown as SharedWindow
 }

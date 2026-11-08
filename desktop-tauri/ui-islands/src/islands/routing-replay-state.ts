@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { t } from '../i18n'
-import { bridge, errorMessage, host, type RoutingWorkspace, type StickyEntry } from './routing-types'
+import { bridge, errorMessage, host, type RoutingWorkspace, type StickyEntry, onPage } from './routing-types'
 
 export type ReplayQuery = { model?: string; minutes: number; scope: 'window' | 'running'; search?: string }
 
@@ -54,7 +54,7 @@ export function useRoutingReplay(active: boolean, workspaceModel?: string) {
     }
     void load(false)
     const timer = window.setInterval(() => {
-      if (!document.hidden && host().wbApp?.currentPage === 'routing') void load(true)
+      if (!document.hidden && onPage('routing')) void load(true)
     }, 5000)
     return () => { alive = false; sequence.current++; window.clearInterval(timer) }
   }, [active, currentModel, token])

@@ -23,7 +23,7 @@ import { useRoutingReplay } from './routing-replay-state'
 import { draftDirty, useRoutingEditor } from './routing-editor-state'
 import { RouteIcon, stickyLabel, strategyLabel } from './routing-ui'
 import { isTraceRunning, requestKey } from './routing-trace-model'
-import { bridge, errorMessage, host, type ReplayRow, type RoutingWorkspace } from './routing-types'
+import { bridge, errorMessage, host, type ReplayRow, type RoutingWorkspace, onPage } from './routing-types'
 
 let requestTrace: ((row?: ReplayRow | null) => void) | undefined
 let refreshWorkspace: (() => void) | undefined
@@ -101,7 +101,7 @@ export function RoutingPage() {
     let alive = true
     let pending = false
     const timer = window.setInterval(async () => {
-      if (pending || document.hidden || host().wbApp?.currentPage !== 'routing') return
+      if (pending || document.hidden || !onPage('routing')) return
       pending = true
       try {
         const next = await bridge().getRoutingTraceRequest({ id: selected.id, ts: selected.ts })

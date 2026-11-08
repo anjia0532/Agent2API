@@ -1,4 +1,5 @@
 import * as React from 'react'
+import { onPage } from './update-shared'
 import { mountOnPage } from '../island-lazy'
 import { flushSync } from 'react-dom'
 import { createRoot } from 'react-dom/client'
@@ -458,7 +459,7 @@ function RequestsPage() {
   React.useEffect(() => {
     if (!auto.enabled || auto.ms <= 0) return
     const timer = window.setInterval(() => {
-      if (document.hidden || shared().wbApp?.currentPage !== 'requests') return
+      if (document.hidden || !onPage('requests')) return
       if (polling || loadingRef.current > 0) return
       polling = true
       void loadPanel({ silent: true }).finally(() => { polling = false })

@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { bridge, host, type ReplayRow } from './routing-types'
+import { bridge, host, onPage, type ReplayRow } from './routing-types'
 import { attemptState, isTraceRunning, requestKey, requestModel, traceAttempts } from './routing-trace-model'
 
 export type RoutingCanvasActivity = {
@@ -43,7 +43,7 @@ export function useRoutingCanvasActivity(active: boolean, model: string, groupId
     let alive = true
     let pending = false
     const load = async () => {
-      if (pending || document.hidden || host().wbApp?.currentPage !== 'routing') return
+      if (pending || document.hidden || !onPage('routing')) return
       pending = true
       try {
         const rows: ReplayRow[] = []
