@@ -623,7 +623,7 @@ pub(super) fn entry_json(entry: &RequestEntry) -> Value {
         // 查不到价时给 `costKnown: false` + `costCny: 0`，并**不**省略字段：
         // 界面据此显示「未定价」，而「字段缺失」在前端看起来和旧版本一样，
         // 分不清是没价还是没这个功能。
-        let (priced_model, cost) = match super::pricing::snapshot() {
+        let (priced_model, cost) = match super::pricing::resolved() {
             Ok(snapshot) => super::pricing::cost_for(
                 snapshot,
                 [entry.model.as_str(), entry.upstream_model.as_str()],

@@ -708,7 +708,7 @@ impl RequestStats {
     /// 而实际可能有一半请求没算进去。`missing` 列出**没定价的模型名与条数**，
     /// 界面据此显示「另有 N 条未定价」，数字才有意义。
     fn cost_summary(&self, start: &str, end: &str) -> Value {
-        let snapshot = match super::request_stats::pricing::snapshot() {
+        let snapshot = match super::request_stats::pricing::resolved() {
             Ok(snapshot) => snapshot,
             // 内置价表读不出来时如实说，而不是回一个像模像样的 0
             Err(error) => {

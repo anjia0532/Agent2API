@@ -271,6 +271,7 @@ where
 const EMBEDDED: &str = include_str!("../../../assets/pricing.json");
 
 static SNAPSHOT: std::sync::OnceLock<Result<PriceSnapshot, String>> = std::sync::OnceLock::new();
+static RESOLVED: std::sync::OnceLock<Result<PriceSnapshot, String>> = std::sync::OnceLock::new();
 
 /// 取内置快照（解析一次，之后复用）。
 ///
@@ -282,6 +283,85 @@ pub fn snapshot() -> Result<&'static PriceSnapshot, String> {
             let value: Value =
                 serde_json::from_str(EMBEDDED).map_err(|error| format!("内置价格表不是合法 JSON：{error}"))?;
             PriceSnapshot::parse(&value)
+        })
+        .as_ref()
+        .map_err(|error| error.clone())
+}
+
+/// 用户覆盖文件的位置：`<配置目录>/pricing.json`。
+///
+/// ── 为什么必须有这条通道（真实需求，不是预埋）──────────────────
+/// 内置表来自 OpenRouter 的公开目录，**覆盖不到网关实际在跑的很多模型**：
+/// 实测本机 34 条请求的 `glm-5.3-flash` 就不在表里，于是全部落到「未定价」,
+/// 估算成本恒为 0。用户需要能自己给这些模型填价。
+///
+/// 形状与内置表**完全相同**（`{meta:{usd_cny},models:{id:{unit,flat:{…}}}}`），
+/// 按模型 id **覆盖**内置条目；新增的模型直接并进来。
+pub fn override_path() -> std::path::PathBuf {
+    crate::paths::config_dir().join("pricing.json")
+}
+
+/// 把覆盖表并到基表上（纯函数，便于单测）。
+///
+/// 规则：**同 id 以覆盖表为准**（整体替换该条目，不做字段级合并 —— 字段级合并
+/// 会让「我只想改输出价」变成「其余字段从内置表继承」，而内置表的价格随时会
+/// 随版本变，那等于让用户的手填价悄悄漂移）。
+pub fn merge(base: PriceSnapshot, overlay: PriceSnapshot) -> PriceSnapshot {
+    let mut models = base.models;
+    for (id, entry) in overlay.models {
+        models.insert(id, entry);
+    }
+    PriceSnapshot {
+        // 汇率只用一个：覆盖表给了正值就用它（用户可能想按自己的结算汇率算）
+        usd_cny: if overlay.usd_cny > 0.0 { overlay.usd_cny } else { base.usd_cny },
+        generated_at: base.generated_at,
+        models,
+    }
+}
+
+/// **生效的**价格快照 = 内置表 + 用户覆盖文件（若存在且可解析）。
+///
+/// 覆盖文件只在**首次调用时读一次**（之后走缓存）：改完要重启进程才生效。
+/// 说清楚这一点比悄悄每轮 stat 一个文件好 —— 后者会让「改了没生效」变成
+/// 一个要靠猜的时序问题。
+///
+/// 覆盖文件损坏/形状不对时**保留内置表**并返回内置结果（不降级成空表）：
+/// 用户的笔误不该让整份报表变成「全部未定价」。
+pub fn resolved() -> Result<&'static PriceSnapshot, String> {
+    RESOLVED
+        .get_or_init(|| {
+            let base = snapshot()?.clone();
+            let path = override_path();
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                return Ok(base);
+            };
+            let value: Value = match serde_json::from_str(&text) {
+                Ok(value) => value,
+                Err(error) => {
+                    crate::server::logging::log(
+                        "Pricing",
+                        &format!("覆盖价格表不是合法 JSON，已忽略（{}）：{error}", path.display()),
+                    );
+                    return Ok(base);
+                }
+            };
+            match PriceSnapshot::parse(&value) {
+                Ok(overlay) => {
+                    let merged = merge(base, overlay);
+                    crate::server::logging::log(
+                        "Pricing",
+                        &format!("已合并用户价格表（{}）：共 {} 个模型", path.display(), merged.models.len()),
+                    );
+                    Ok(merged)
+                }
+                Err(error) => {
+                    crate::server::logging::log(
+                        "Pricing",
+                        &format!("覆盖价格表形状不符，已忽略（{}）：{error}", path.display()),
+                    );
+                    Ok(base)
+                }
+            }
         })
         .as_ref()
         .map_err(|error| error.clone())
@@ -466,5 +546,43 @@ mod tests {
         assert!(used.is_none());
         assert!(!cost.known);
         assert_eq!(cost.cny, 0.0);
+    }
+
+    /// 覆盖表：同 id **整体替换**、新 id 并入、汇率可被覆盖。
+    ///
+    /// 这条通道是真实需求 —— 内置表来自 OpenRouter 公开目录，覆盖不到网关
+    /// 实际在跑的模型（实测本机全部流量都是 `glm-5.3-flash`，它不在表里）。
+    #[test]
+    fn an_override_replaces_whole_entries_and_adds_new_ones() {
+        let base = PriceSnapshot::parse(&json!({
+            "meta": { "usd_cny": 7.1 },
+            "models": {
+                "existing": { "unit": 1000000, "flat": { "input_cache_miss": 1.0, "output": 2.0 } },
+                "kept": { "unit": 1000000, "flat": { "input_cache_miss": 3.0, "output": 4.0 } }
+            }
+        }))
+        .expect("基表");
+        let overlay = PriceSnapshot::parse(&json!({
+            "meta": { "usd_cny": 6.5 },
+            "models": {
+                // 同 id：整体替换（输出价改了，输入价不给就该是 0，而不是继承基表的 1.0）
+                "existing": { "unit": 1000000, "flat": { "output": 9.0 } },
+                // 新 id：并进来
+                "glm-5.3-flash": { "unit": 1000000, "flat": { "input_cache_miss": 0.5, "output": 1.5 } }
+            }
+        }))
+        .expect("覆盖表");
+
+        let merged = merge(base, overlay);
+        assert_eq!(merged.rate(), 6.5, "汇率以覆盖表为准");
+        assert_eq!(merged.models.len(), 3, "两条原有 + 一条新增");
+        let replaced = &merged.models["existing"];
+        assert_eq!(replaced.flat.as_ref().unwrap().output, 9.0);
+        assert_eq!(
+            replaced.flat.as_ref().unwrap().input_cache_miss, 0.0,
+            "整体替换而不是字段级合并：没给输入价就是 0，不继承基表的 1.0"
+        );
+        assert_eq!(merged.models["kept"].flat.as_ref().unwrap().input_cache_miss, 3.0, "没被覆盖的条目原样保留");
+        assert!(merged.models.contains_key("glm-5.3-flash"), "新增模型应当并入");
     }
 }
