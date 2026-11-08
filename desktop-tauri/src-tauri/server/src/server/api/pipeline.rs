@@ -1087,12 +1087,22 @@ fn resolve_aggregate_model(
         return Ok(None);
     };
     // 收集 `(渠道, 真实模型 id)`；只留该 Key 允许的模型
+    //
+    // ⚠️ 还要跟下游那道「模型必须在广告视图里」的检查用**同一个视图**。
+    // 实测踩过：`pick_model` 用全量 `active_manifests` 挑中了 `Kimi-K2.8-Preview`，
+    // 而下游按收窄后的广告视图判它「模型不存在」—— 用户看到的是一条莫名其妙的
+    // 404，实际是我们自己挑了一个不在可选范围内的名字。
+    // 所以这里就按下游的判据预筛，挑出来的名字保证能过后面每一道检查。
+    let has_providers = has_available_providers(state.store());
     let mut pairs: Vec<(String, String)> = Vec::new();
     for (provider, manifest) in crate::server::core::providers::catalog::active_manifests(state.store()) {
         for model in manifest {
             let Some(id) = model.get("id") else { continue };
             let name = crate::server::core::models::shape_value_text(id);
             if name.trim().is_empty() || !key_scope::allows_model(scope, &name) {
+                continue;
+            }
+            if has_providers && !advertised_manifest_contains(state.store(), &name) {
                 continue;
             }
             pairs.push((provider.clone(), name));
